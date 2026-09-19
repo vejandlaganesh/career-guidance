@@ -1,0 +1,6 @@
+{
+  "name": "Edu Carrier",
+  "description": "An AI-powered career guidance platform helping students explore educational streams, discover careers, analyze skill gaps, and access personalized roadmaps with an interactive AI Career Guide.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
