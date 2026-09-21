@@ -4,8 +4,8 @@ import fs from "fs";
 import { createServer as createViteServer } from "vite";
 import { GoogleGenAI } from "@google/genai";
 import dotenv from "dotenv";
-import { initializeApp, getApps, cert } from "firebase-admin/app";
-import { getFirestore } from "firebase-admin/firestore";
+import { initializeApp, getApps, getApp } from "firebase/app";
+import { getFirestore, doc, setDoc, getDocs, getDoc, collection, query, limit } from "firebase/firestore";
 
 dotenv.config();
 
@@ -14,24 +14,15 @@ let db: any = null;
 try {
   const serviceAccountPath = path.join(process.cwd(), "firebase-applet-config.json");
   if (fs.existsSync(serviceAccountPath)) {
-    const serviceAccount = JSON.parse(fs.readFileSync(serviceAccountPath, "utf-8"));
-    if (getApps().length === 0) {
-      initializeApp({
-        credential: cert(serviceAccount)
-      });
-    }
-    const firestoreDb = getFirestore();
-    const dbId = process.env.FIRESTORE_DATABASE_ID;
-    if (dbId && dbId !== "(default)") {
-      firestoreDb.settings({ databaseId: dbId });
-    }
-    db = firestoreDb;
-    console.log("Firebase Admin initialized and Firestore connected.");
+    const firebaseConfig = JSON.parse(fs.readFileSync(serviceAccountPath, "utf-8"));
+    const app = getApps().length === 0 ? initializeApp(firebaseConfig) : getApp();
+    db = getFirestore(app);
+    console.log("Firebase initialized and Firestore connected.");
   } else {
     console.warn("firebase-applet-config.json not found. Firestore sync disabled.");
   }
 } catch (error) {
-  console.error("Failed to initialize Firebase Admin:", error);
+  console.error("Failed to initialize Firebase:", error);
 }
 
 const app = express();
@@ -184,40 +175,34 @@ async function syncToFirestore(data: DataStore) {
   const promises: Promise<any>[] = [];
   
   // Users
-  const usersRef = db.collection("users");
   for (const [email, userObj] of Object.entries(data.users)) {
     if (userObj && userObj.id) {
-      promises.push(usersRef.doc(userObj.id).set(userObj, { merge: true }));
+      promises.push(setDoc(doc(db, "users", userObj.id), userObj, { merge: true }));
     }
   }
   
   // SavedCareers
-  const scRef = db.collection("savedCareers");
   for (const [userId, careers] of Object.entries(data.savedCareers)) {
-    promises.push(scRef.doc(userId).set({ careers }, { merge: true }));
+    promises.push(setDoc(doc(db, "savedCareers", userId), { careers }, { merge: true }));
   }
 
   // QuizAttempts
-  const qaRef = db.collection("quizAttempts");
   for (const [userId, attempts] of Object.entries(data.quizAttempts)) {
-    promises.push(qaRef.doc(userId).set({ attempts }, { merge: true }));
+    promises.push(setDoc(doc(db, "quizAttempts", userId), { attempts }, { merge: true }));
   }
 
   // Conversations
-  const convRef = db.collection("conversations");
   for (const [userId, history] of Object.entries(data.conversations)) {
-    promises.push(convRef.doc(userId).set({ history }, { merge: true }));
+    promises.push(setDoc(doc(db, "conversations", userId), { history }, { merge: true }));
   }
 
   // Notifications
-  const notifRef = db.collection("notifications");
   for (const [userId, notifs] of Object.entries(data.notifications)) {
-    promises.push(notifRef.doc(userId).set({ notifs }, { merge: true }));
+    promises.push(setDoc(doc(db, "notifications", userId), { notifs }, { merge: true }));
   }
 
   // System Config
-  const sysRef = db.collection("system_config").doc("main");
-  promises.push(sysRef.set({
+  promises.push(setDoc(doc(db, "system_config", "main"), {
     customCareers: data.customCareers || [],
     customStreams: data.customStreams || [],
     customResources: data.customResources || [],
@@ -238,7 +223,7 @@ async function syncToFirestore(data: DataStore) {
 async function hydrateStoreFromFirestore() {
   if (!db) return;
   try {
-    const usersSnap = await db.collection("users").get();
+    const usersSnap = await getDocs(collection(db, "users"));
     if (!usersSnap.empty) {
       const dbUsers: Record<string, any> = {};
       usersSnap.forEach((doc: any) => {
@@ -250,36 +235,36 @@ async function hydrateStoreFromFirestore() {
       store.users = dbUsers;
     }
 
-    const scSnap = await db.collection("savedCareers").get();
+    const scSnap = await getDocs(collection(db, "savedCareers"));
     if (!scSnap.empty) {
       scSnap.forEach((doc: any) => {
         store.savedCareers[doc.id] = doc.data().careers || [];
       });
     }
 
-    const qaSnap = await db.collection("quizAttempts").get();
+    const qaSnap = await getDocs(collection(db, "quizAttempts"));
     if (!qaSnap.empty) {
       qaSnap.forEach((doc: any) => {
         store.quizAttempts[doc.id] = doc.data().attempts || [];
       });
     }
 
-    const convSnap = await db.collection("conversations").get();
+    const convSnap = await getDocs(collection(db, "conversations"));
     if (!convSnap.empty) {
       convSnap.forEach((doc: any) => {
         store.conversations[doc.id] = doc.data().history || [];
       });
     }
 
-    const notifSnap = await db.collection("notifications").get();
+    const notifSnap = await getDocs(collection(db, "notifications"));
     if (!notifSnap.empty) {
       notifSnap.forEach((doc: any) => {
         store.notifications[doc.id] = doc.data().notifs || [];
       });
     }
 
-    const sysSnap = await db.collection("system_config").doc("main").get();
-    if (sysSnap.exists) {
+    const sysSnap = await getDoc(doc(db, "system_config", "main"));
+    if (sysSnap.exists()) {
       const sysData = sysSnap.data() || {};
       store.customCareers = sysData.customCareers || [];
       store.customStreams = sysData.customStreams || [];
