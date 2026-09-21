@@ -4,8 +4,35 @@ import fs from "fs";
 import { createServer as createViteServer } from "vite";
 import { GoogleGenAI } from "@google/genai";
 import dotenv from "dotenv";
+import { initializeApp, getApps, cert } from "firebase-admin/app";
+import { getFirestore } from "firebase-admin/firestore";
 
 dotenv.config();
+
+// Firebase Admin Initialization
+let db: any = null;
+try {
+  const serviceAccountPath = path.join(process.cwd(), "firebase-applet-config.json");
+  if (fs.existsSync(serviceAccountPath)) {
+    const serviceAccount = JSON.parse(fs.readFileSync(serviceAccountPath, "utf-8"));
+    if (getApps().length === 0) {
+      initializeApp({
+        credential: cert(serviceAccount)
+      });
+    }
+    const firestoreDb = getFirestore();
+    const dbId = process.env.FIRESTORE_DATABASE_ID;
+    if (dbId && dbId !== "(default)") {
+      firestoreDb.settings({ databaseId: dbId });
+    }
+    db = firestoreDb;
+    console.log("Firebase Admin initialized and Firestore connected.");
+  } else {
+    console.warn("firebase-applet-config.json not found. Firestore sync disabled.");
+  }
+} catch (error) {
+  console.error("Failed to initialize Firebase Admin:", error);
+}
 
 const app = express();
 const PORT = 3000;
@@ -141,13 +168,142 @@ function loadData(): DataStore {
 function saveData(data: DataStore) {
   try {
     fs.writeFileSync(DB_FILE, JSON.stringify(data, null, 2), "utf-8");
-  } catch (e) {
+    if (db) {
+      syncToFirestore(data).catch((err: any) => {
+        console.error("Error syncing to Firestore:", err);
+      });
+    }
+  } catch (e: any) {
     console.error("Error saving data store:", e);
+  }
+}
+
+async function syncToFirestore(data: DataStore) {
+  if (!db) return;
+  // Use independent promises rather than batch to avoid 500 limit on large datasets
+  const promises: Promise<any>[] = [];
+  
+  // Users
+  const usersRef = db.collection("users");
+  for (const [email, userObj] of Object.entries(data.users)) {
+    if (userObj && userObj.id) {
+      promises.push(usersRef.doc(userObj.id).set(userObj, { merge: true }));
+    }
+  }
+  
+  // SavedCareers
+  const scRef = db.collection("savedCareers");
+  for (const [userId, careers] of Object.entries(data.savedCareers)) {
+    promises.push(scRef.doc(userId).set({ careers }, { merge: true }));
+  }
+
+  // QuizAttempts
+  const qaRef = db.collection("quizAttempts");
+  for (const [userId, attempts] of Object.entries(data.quizAttempts)) {
+    promises.push(qaRef.doc(userId).set({ attempts }, { merge: true }));
+  }
+
+  // Conversations
+  const convRef = db.collection("conversations");
+  for (const [userId, history] of Object.entries(data.conversations)) {
+    promises.push(convRef.doc(userId).set({ history }, { merge: true }));
+  }
+
+  // Notifications
+  const notifRef = db.collection("notifications");
+  for (const [userId, notifs] of Object.entries(data.notifications)) {
+    promises.push(notifRef.doc(userId).set({ notifs }, { merge: true }));
+  }
+
+  // System Config
+  const sysRef = db.collection("system_config").doc("main");
+  promises.push(sysRef.set({
+    customCareers: data.customCareers || [],
+    customStreams: data.customStreams || [],
+    customResources: data.customResources || [],
+    customQuizQuestions: data.customQuizQuestions || [],
+    customColleges: data.customColleges || [],
+    customExams: data.customExams || [],
+    customCourses: data.customCourses || [],
+    customSkills: data.customSkills || [],
+    customRoadmaps: data.customRoadmaps || [],
+    customRecommendations: data.customRecommendations || [],
+    customActivities: data.customActivities || [],
+    aiConfig: data.aiConfig || {}
+  }, { merge: true }));
+
+  await Promise.all(promises);
+}
+
+async function hydrateStoreFromFirestore() {
+  if (!db) return;
+  try {
+    const usersSnap = await db.collection("users").get();
+    if (!usersSnap.empty) {
+      const dbUsers: Record<string, any> = {};
+      usersSnap.forEach((doc: any) => {
+        const u = doc.data();
+        if (u.email) {
+          dbUsers[u.email.toLowerCase()] = u;
+        }
+      });
+      store.users = dbUsers;
+    }
+
+    const scSnap = await db.collection("savedCareers").get();
+    if (!scSnap.empty) {
+      scSnap.forEach((doc: any) => {
+        store.savedCareers[doc.id] = doc.data().careers || [];
+      });
+    }
+
+    const qaSnap = await db.collection("quizAttempts").get();
+    if (!qaSnap.empty) {
+      qaSnap.forEach((doc: any) => {
+        store.quizAttempts[doc.id] = doc.data().attempts || [];
+      });
+    }
+
+    const convSnap = await db.collection("conversations").get();
+    if (!convSnap.empty) {
+      convSnap.forEach((doc: any) => {
+        store.conversations[doc.id] = doc.data().history || [];
+      });
+    }
+
+    const notifSnap = await db.collection("notifications").get();
+    if (!notifSnap.empty) {
+      notifSnap.forEach((doc: any) => {
+        store.notifications[doc.id] = doc.data().notifs || [];
+      });
+    }
+
+    const sysSnap = await db.collection("system_config").doc("main").get();
+    if (sysSnap.exists) {
+      const sysData = sysSnap.data() || {};
+      store.customCareers = sysData.customCareers || [];
+      store.customStreams = sysData.customStreams || [];
+      store.customResources = sysData.customResources || [];
+      store.customQuizQuestions = sysData.customQuizQuestions || [];
+      store.customColleges = sysData.customColleges || [];
+      store.customExams = sysData.customExams || [];
+      store.customCourses = sysData.customCourses || [];
+      store.customSkills = sysData.customSkills || [];
+      store.customRoadmaps = sysData.customRoadmaps || [];
+      store.customRecommendations = sysData.customRecommendations || [];
+      store.customActivities = sysData.customActivities || [];
+      store.aiConfig = sysData.aiConfig || {};
+    }
+    
+    console.log("Hydrated in-memory store from Firestore");
+  } catch (error: any) {
+    console.error("Failed to hydrate store from Firestore:", error);
   }
 }
 
 // Global In-Memory representation synced with File
 let store = loadData();
+hydrateStoreFromFirestore();
 
 // Lazy initialization of GoogleGenAI Client
 let genAIClient: GoogleGenAI | null = null;

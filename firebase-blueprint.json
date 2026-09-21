@@ -1,0 +1,31 @@
+{
+  "project_info": {
+    "platform": "web"
+  },
+  "collections": [
+    {
+      "name": "users",
+      "description": "Stores user profiles"
+    },
+    {
+      "name": "savedCareers",
+      "description": "Stores bookmarks of careers saved by users"
+    },
+    {
+      "name": "quizAttempts",
+      "description": "Stores quiz attempts taken by users"
+    },
+    {
+      "name": "conversations",
+      "description": "Stores AI chat conversation histories"
+    },
+    {
+      "name": "notifications",
+      "description": "Stores system and user notifications"
+    },
+    {
+      "name": "system_config",
+      "description": "Stores custom configuration, activities, and platform data"
+    }
+  ]
+}
