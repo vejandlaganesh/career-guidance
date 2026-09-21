@@ -104,6 +104,7 @@ Activities can be scheduled with start/end dates and targeted to specific studen
 * Node.js
 * Express
 * TypeScript
+* Google Cloud Firestore
 
 **AI**
 
@@ -159,7 +160,15 @@ Create a `.env.local` file and add the required API configuration:
 GEMINI_API_KEY=your_api_key_here
 ```
 
-### 4. Start the development server
+### 4. Configure Database (Firestore)
+
+To enable persistent data storage, add your `firebase-applet-config.json` service account file to the root directory. You can optionally set your Database ID in the `.env` file:
+
+```env
+FIRESTORE_DATABASE_ID=(default)
+```
+
+### 5. Start the development server
 
 ```bash
 npm run dev
