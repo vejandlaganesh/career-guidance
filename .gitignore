@@ -8,3 +8,4 @@ coverage/
 !.env.example
 venv/
 data-store.json
+firebase-applet-config.json
