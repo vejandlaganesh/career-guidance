@@ -12,14 +12,23 @@ dotenv.config();
 // Firebase Admin Initialization
 let db: any = null;
 try {
+  let firebaseConfig;
   const serviceAccountPath = path.join(process.cwd(), "firebase-applet-config.json");
-  if (fs.existsSync(serviceAccountPath)) {
-    const firebaseConfig = JSON.parse(fs.readFileSync(serviceAccountPath, "utf-8"));
+  
+  if (process.env.FIREBASE_CONFIG) {
+    // Attempt to parse from environment variable first (for production)
+    firebaseConfig = JSON.parse(process.env.FIREBASE_CONFIG);
+  } else if (fs.existsSync(serviceAccountPath)) {
+    // Fallback to local file (for development)
+    firebaseConfig = JSON.parse(fs.readFileSync(serviceAccountPath, "utf-8"));
+  }
+
+  if (firebaseConfig) {
     const app = getApps().length === 0 ? initializeApp(firebaseConfig) : getApp();
     db = getFirestore(app);
     console.log("Firebase initialized and Firestore connected.");
   } else {
-    console.warn("firebase-applet-config.json not found. Firestore sync disabled.");
+    console.warn("Firebase config not found in env or file. Firestore sync disabled.");
   }
 } catch (error) {
   console.error("Failed to initialize Firebase:", error);
