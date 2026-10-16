@@ -1,12 +1,64 @@
-import React from "react";
-import { BookOpen, HelpCircle, Compass, BrainCircuit, ArrowRight, UserPlus, LogIn, Star, Award, GraduationCap, Sparkles, TrendingUp, Map, Search, Database } from "lucide-react";
+import React, { useState } from "react";
+import {
+  BookOpen,
+  HelpCircle,
+  Compass,
+  BrainCircuit,
+  ArrowRight,
+  UserPlus,
+  LogIn,
+  Star,
+  Award,
+  GraduationCap,
+  Sparkles,
+  TrendingUp,
+  Map,
+  Search,
+  Database,
+  ShieldCheck,
+  Key,
+  Loader2,
+  CheckCircle2,
+  Play
+} from "lucide-react";
 
 interface HomeProps {
   onNavigate: (tab: string) => void;
-  onOpenAuth: (mode: "login" | "register" | "admin") => void;
+  onOpenAuth: (mode: "login" | "register" | "admin" | "forgot") => void;
+  onDemoLogin?: (role: "student" | "admin", targetTab?: string) => Promise<void> | void;
 }
 
-export default function Home({ onNavigate, onOpenAuth }: HomeProps) {
+export default function Home({ onNavigate, onOpenAuth, onDemoLogin }: HomeProps) {
+  const [demoLoading, setDemoLoading] = useState<string | null>(null);
+
+  const handleDemoClick = async (role: "student" | "admin", targetTab?: string) => {
+    setDemoLoading(targetTab ? `${role}-${targetTab}` : role);
+    try {
+      if (onDemoLogin) {
+        await onDemoLogin(role, targetTab);
+      } else {
+        const email = role === "admin" ? "admin@educarrier.com" : "demo@educarrier.com";
+        const password = role === "admin" ? "admin123" : "demo123";
+        const res = await fetch("/api/auth/login", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ email, password })
+        });
+        const data = await res.json();
+        if (res.ok && data.user) {
+          localStorage.setItem("newedu_user", JSON.stringify(data.user));
+          window.location.reload();
+        } else {
+          onOpenAuth(role === "admin" ? "admin" : "login");
+        }
+      }
+    } catch (err) {
+      console.error("Demo login error:", err);
+      onOpenAuth(role === "admin" ? "admin" : "login");
+    } finally {
+      setDemoLoading(null);
+    }
+  };
   return (
     <div className="relative min-h-screen bg-slate-50 overflow-x-hidden">
       {/* Navigation Bar */}
@@ -404,25 +456,173 @@ export default function Home({ onNavigate, onOpenAuth }: HomeProps) {
       </section>
 
       {/* Footer */}
-      <footer className="bg-white py-8">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 flex flex-col md:flex-row justify-between items-center gap-4">
-          <span className="text-sm text-slate-400">© 2026 Edu Carrier guidance. All rights reserved.</span>
-          <div className="flex gap-6">
-            <button onClick={() => {
-              const el = document.getElementById("careers");
-              if (el) el.scrollIntoView({ behavior: "smooth" });
-            }} className="text-xs font-semibold text-slate-400 hover:text-indigo-600 cursor-pointer">Careers</button>
-            <button onClick={() => {
-              const el = document.getElementById("streams");
-              if (el) el.scrollIntoView({ behavior: "smooth" });
-            }} className="text-xs font-semibold text-slate-400 hover:text-indigo-600 cursor-pointer">Streams</button>
-            <button onClick={() => {
-              const el = document.getElementById("resources");
-              if (el) el.scrollIntoView({ behavior: "smooth" });
-            }} className="text-xs font-semibold text-slate-400 hover:text-indigo-600 cursor-pointer">Resources</button>
-            <button onClick={() => onOpenAuth("admin")} className="text-xs font-semibold text-slate-400 hover:text-indigo-600 flex items-center gap-1 cursor-pointer">
-              🔐 Admin Portal
-            </button>
+      <footer className="bg-slate-900 text-slate-300 pt-14 pb-10 border-t border-slate-800">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 space-y-10">
+          {/* Quick Demo Access Bar / Buttons */}
+          <div className="relative overflow-hidden bg-gradient-to-r from-slate-800/95 via-slate-800 to-indigo-950/70 p-6 sm:p-8 rounded-3xl border border-slate-700/70 shadow-2xl shadow-slate-950/40 backdrop-blur-sm">
+            {/* Ambient glow accent */}
+            <div className="absolute -right-16 -top-16 w-52 h-52 bg-indigo-500/10 rounded-full blur-3xl pointer-events-none"></div>
+            <div className="absolute -left-16 -bottom-16 w-52 h-52 bg-emerald-500/10 rounded-full blur-3xl pointer-events-none"></div>
+
+            <div className="relative z-10 flex flex-col lg:flex-row items-start lg:items-center justify-between gap-6">
+              <div className="space-y-2 max-w-xl">
+                <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-indigo-500/15 border border-indigo-400/20 text-indigo-300 text-xs font-semibold">
+                  <Sparkles className="w-3.5 h-3.5 text-indigo-400 animate-pulse" />
+                  Instant Live Demo Access
+                </div>
+                <h3 className="text-xl sm:text-2xl font-black text-white tracking-tight">
+                  Explore Edu Carrier with 1-Click Demo Accounts
+                </h3>
+                <p className="text-xs text-slate-400 leading-relaxed">
+                  Evaluate both student guidance pathways and administrator management tools immediately. Click any demo portal below to test without manual sign-up.
+                </p>
+              </div>
+
+              {/* Demo Action Buttons */}
+              <div className="flex flex-wrap items-center gap-3 w-full lg:w-auto">
+                {/* Demo Student Button */}
+                <button
+                  type="button"
+                  onClick={() => handleDemoClick("student")}
+                  disabled={demoLoading !== null}
+                  className="flex-1 sm:flex-initial group relative inline-flex items-center justify-center gap-3 px-5 py-3.5 rounded-2xl bg-gradient-to-r from-indigo-600 via-indigo-500 to-indigo-600 hover:from-indigo-500 hover:to-indigo-500 text-white font-bold text-sm shadow-lg shadow-indigo-600/30 hover:shadow-indigo-600/50 transition-all duration-200 active:scale-95 disabled:opacity-60 cursor-pointer border border-indigo-400/30"
+                >
+                  {demoLoading === "student" ? (
+                    <Loader2 className="w-5 h-5 animate-spin text-white" />
+                  ) : (
+                    <div className="w-8 h-8 rounded-xl bg-white/10 flex items-center justify-center group-hover:scale-110 transition-transform">
+                      <GraduationCap className="w-4 h-4 text-indigo-200" />
+                    </div>
+                  )}
+                  <div className="text-left">
+                    <span className="block leading-none text-[10px] text-indigo-200 uppercase tracking-wider font-bold">1-Click Login</span>
+                    <span className="block leading-tight text-sm font-black mt-0.5">Demo Student</span>
+                  </div>
+                </button>
+
+                {/* Demo Admin Button */}
+                <button
+                  type="button"
+                  onClick={() => handleDemoClick("admin")}
+                  disabled={demoLoading !== null}
+                  className="flex-1 sm:flex-initial group relative inline-flex items-center justify-center gap-3 px-5 py-3.5 rounded-2xl bg-gradient-to-r from-emerald-600 via-teal-600 to-emerald-600 hover:from-emerald-500 hover:to-teal-500 text-white font-bold text-sm shadow-lg shadow-emerald-600/30 hover:shadow-emerald-600/50 transition-all duration-200 active:scale-95 disabled:opacity-60 cursor-pointer border border-emerald-400/30"
+                >
+                  {demoLoading === "admin" ? (
+                    <Loader2 className="w-5 h-5 animate-spin text-white" />
+                  ) : (
+                    <div className="w-8 h-8 rounded-xl bg-white/10 flex items-center justify-center group-hover:scale-110 transition-transform">
+                      <ShieldCheck className="w-4 h-4 text-emerald-200" />
+                    </div>
+                  )}
+                  <div className="text-left">
+                    <span className="block leading-none text-[10px] text-emerald-200 uppercase tracking-wider font-bold">1-Click Login</span>
+                    <span className="block leading-tight text-sm font-black mt-0.5">Demo Admin</span>
+                  </div>
+                </button>
+
+                {/* Demo Quiz Launch Button */}
+                <button
+                  type="button"
+                  onClick={() => handleDemoClick("student", "quiz")}
+                  disabled={demoLoading !== null}
+                  className="flex-1 sm:flex-initial inline-flex items-center justify-center gap-2.5 px-4 py-3.5 rounded-2xl bg-slate-800/90 hover:bg-slate-700/80 text-slate-200 hover:text-white border border-slate-700 font-semibold text-xs transition-all duration-200 active:scale-95 disabled:opacity-60 cursor-pointer shadow-sm"
+                  title="Directly launch the interactive AI Career Quiz with demo user"
+                >
+                  {demoLoading === "student-quiz" ? (
+                    <Loader2 className="w-4 h-4 animate-spin text-purple-400" />
+                  ) : (
+                    <BrainCircuit className="w-4 h-4 text-purple-400" />
+                  )}
+                  <div className="text-left">
+                    <span className="block leading-none text-[9px] text-purple-300 uppercase tracking-wider font-bold">Instant Test</span>
+                    <span className="block leading-tight text-xs font-bold mt-0.5">Demo Quiz</span>
+                  </div>
+                </button>
+              </div>
+            </div>
+
+            {/* Demo Credentials Info Strip */}
+            <div className="relative z-10 mt-6 pt-4 border-t border-slate-700/60 flex flex-col md:flex-row items-start md:items-center justify-between gap-3 text-xs text-slate-400">
+              <div className="flex flex-wrap items-center gap-2.5">
+                <span className="text-slate-500 font-bold uppercase tracking-wider text-[10px]">Pre-loaded Credentials:</span>
+                <span className="inline-flex items-center gap-1.5 bg-slate-900/80 px-2.5 py-1 rounded-lg border border-slate-800 text-slate-300">
+                  <span className="w-1.5 h-1.5 rounded-full bg-indigo-400"></span>
+                  Student: <code className="text-indigo-300 font-mono text-[11px]">demo@educarrier.com</code> / <code className="text-slate-400 font-mono text-[11px]">demo123</code>
+                </span>
+                <span className="inline-flex items-center gap-1.5 bg-slate-900/80 px-2.5 py-1 rounded-lg border border-slate-800 text-slate-300">
+                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-400"></span>
+                  Admin: <code className="text-emerald-300 font-mono text-[11px]">admin@educarrier.com</code> / <code className="text-slate-400 font-mono text-[11px]">admin123</code>
+                </span>
+              </div>
+              <div className="text-[11px] text-slate-400 flex items-center gap-1.5">
+                <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400 flex-shrink-0" />
+                <span>Clicking any demo button logs in and syncs your test session automatically.</span>
+              </div>
+            </div>
+          </div>
+
+          {/* Bottom Footer Navigation */}
+          <div className="flex flex-col md:flex-row justify-between items-center gap-6 pt-2">
+            <div className="flex items-center gap-3">
+              <div className="w-8 h-8 rounded-xl bg-gradient-to-tr from-indigo-600 to-emerald-500 flex items-center justify-center text-white shadow-md shadow-indigo-900/30">
+                <GraduationCap className="w-4 h-4" />
+              </div>
+              <div>
+                <span className="font-extrabold text-sm tracking-tight text-white">Edu Carrier</span>
+                <span className="block text-[10px] font-medium text-slate-400 leading-none mt-0.5">© 2026 Edu Carrier Guidance. All rights reserved.</span>
+              </div>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-6 text-xs font-semibold text-slate-400">
+              <button
+                type="button"
+                onClick={() => {
+                  const el = document.getElementById("careers");
+                  if (el) el.scrollIntoView({ behavior: "smooth" });
+                }}
+                className="hover:text-white transition-colors cursor-pointer"
+              >
+                Careers
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  const el = document.getElementById("streams");
+                  if (el) el.scrollIntoView({ behavior: "smooth" });
+                }}
+                className="hover:text-white transition-colors cursor-pointer"
+              >
+                Streams
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  const el = document.getElementById("resources");
+                  if (el) el.scrollIntoView({ behavior: "smooth" });
+                }}
+                className="hover:text-white transition-colors cursor-pointer"
+              >
+                Resources
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  const el = document.getElementById("faq");
+                  if (el) el.scrollIntoView({ behavior: "smooth" });
+                }}
+                className="hover:text-white transition-colors cursor-pointer"
+              >
+                FAQ
+              </button>
+              <button
+                type="button"
+                onClick={() => onOpenAuth("admin")}
+                className="text-slate-300 hover:text-emerald-400 flex items-center gap-1.5 transition-colors cursor-pointer"
+              >
+                <Key className="w-3.5 h-3.5 text-emerald-400" />
+                Admin Portal
+              </button>
+            </div>
           </div>
         </div>
       </footer>

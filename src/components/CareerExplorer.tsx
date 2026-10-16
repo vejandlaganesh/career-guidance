@@ -791,22 +791,6 @@ export default function CareerExplorer({
               </div>
             </div>
 
-            {/* Roadmap */}
-            <div className="space-y-4">
-              <h4 className="text-sm font-bold text-slate-900">Career Development Roadmap</h4>
-              <div className="relative border-l-2 border-indigo-100 pl-6 ml-3 space-y-5">
-                {activeCareer.roadmap.map((step, idx) => (
-                  <div key={idx} className="relative">
-                    <span className="absolute -left-9 top-0 w-6 h-6 rounded-full bg-indigo-600 text-white flex items-center justify-center text-xs font-bold border-2 border-white shadow-sm">
-                      {idx + 1}
-                    </span>
-                    <h5 className="text-xs font-bold text-indigo-600 uppercase tracking-wider">Phase {idx + 1}</h5>
-                    <p className="text-sm text-slate-600 mt-0.5 leading-relaxed">{step}</p>
-                  </div>
-                ))}
-              </div>
-            </div>
-
             {/* ADVANCED ANALYTICS & AI-DRIVEN TOOLS */}
             <div className="border border-slate-200 rounded-3xl overflow-hidden bg-slate-50/25 shadow-sm mt-6">
               {/* Tab Selector Headers */}
@@ -960,20 +944,25 @@ export default function CareerExplorer({
                 {/* 3. Personalized Career Roadmap */}
                 {activeAnalysisTab === "roadmap" && (
                   <div className="space-y-4 animate-in fade-in duration-200">
-                    <div>
-                      <h4 className="text-sm font-black text-slate-800">Your Personalized Timeline Path</h4>
-                      <p className="text-xs text-slate-500 mt-0.5">
-                        A dynamic academic and career preparation track customized for your current level: <strong>{userClass}</strong>.
-                      </p>
+                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                      <div>
+                        <h4 className="text-sm font-black text-slate-800">Your Personalized Timeline Path & Academic Blueprint</h4>
+                        <p className="text-xs text-slate-500 mt-0.5">
+                          Detailed phase-by-phase execution milestones synchronized with your current level: <strong>{userClass}</strong>.
+                        </p>
+                      </div>
+                      <span className="text-[10px] font-bold text-indigo-700 bg-indigo-50 border border-indigo-100 px-2.5 py-1 rounded-lg self-start sm:self-center">
+                        Synchronized with D3 Roadmap
+                      </span>
                     </div>
 
-                    <div className="relative border-l-2 border-dashed border-indigo-100 pl-6 ml-3 space-y-5">
+                    <div className="relative border-l-2 border-dashed border-indigo-200 pl-6 ml-3 space-y-5">
                       {/* Class Level Stage */}
                       <div className="relative">
-                        <span className="absolute -left-9 top-0.5 w-6 h-6 rounded-full bg-indigo-100 text-indigo-700 border border-indigo-200 flex items-center justify-center text-xs font-extrabold">
+                        <span className="absolute -left-9 top-0.5 w-6 h-6 rounded-full bg-indigo-600 text-white flex items-center justify-center text-xs font-extrabold shadow-xs">
                           1
                         </span>
-                        <h5 className="text-xs font-black text-indigo-600 uppercase tracking-wider">Stage 1: {userClass} Prep Phase</h5>
+                        <h5 className="text-xs font-black text-indigo-600 uppercase tracking-wider">Stage 1: {userClass} Foundation Phase</h5>
                         <p className="text-[11.5px] text-slate-600 mt-0.5 leading-relaxed">
                           {userClass === "Class 10" 
                             ? "Focus on laying strong mathematical, science, and computer logic foundations. Prepare well for Board Exams to unlock optimal stream selection for higher secondary education."
@@ -981,6 +970,9 @@ export default function CareerExplorer({
                             ? "Deep dive into your chosen stream subjects (e.g., PCM, PCB, Commerce, Arts). Start identifying target university programs and matching entry requirements."
                             : "Accelerated preparation for national competitive entrance exams (JEE, NEET, CUET) and high secondary aggregate management."}
                         </p>
+                        <div className="mt-2 text-[11px] bg-slate-50 border border-slate-200/60 p-2 rounded-lg text-slate-600">
+                          <strong>Benchmark:</strong> {activeCareer.eligibility || "High school board completion with required subjects"}
+                        </div>
                       </div>
 
                       {/* Entrance / University Phase */}
@@ -1003,11 +995,14 @@ export default function CareerExplorer({
                         <p className="text-[11.5px] text-slate-600 mt-0.5 leading-relaxed">
                           Acquire deep conceptual understanding, take active specialization courses, and learn the prerequisite languages: <strong>{activeCareer.languages?.join(", ") || "Industry Standard Frameworks"}</strong>.
                         </p>
+                        <div className="mt-2 text-[11px] bg-slate-50 border border-slate-200/60 p-2 rounded-lg text-slate-600">
+                          <strong>Target Institutes:</strong> {activeCareer.colleges.slice(0, 3).join(", ") || "Leading Accredited Universities"}
+                        </div>
                       </div>
 
                       {/* Industry Readiness */}
                       <div className="relative">
-                        <span className="absolute -left-9 top-0.5 w-6 h-6 rounded-full bg-indigo-600 text-white flex items-center justify-center text-xs font-extrabold">
+                        <span className="absolute -left-9 top-0.5 w-6 h-6 rounded-full bg-emerald-600 text-white flex items-center justify-center text-xs font-extrabold shadow-xs">
                           ✓
                         </span>
                         <h5 className="text-xs font-black text-slate-800 uppercase tracking-wider">Stage 4: Portfolio & Professional Entry</h5>

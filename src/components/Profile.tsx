@@ -84,7 +84,10 @@ export default function Profile({ user, savedCareersCount, onProfileUpdated }: P
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ fullName, classLevel, skills, preferredSubjects, password })
       });
-      const data = await res.json();
+      let data: any = {};
+      if (res.headers.get("content-type")?.includes("application/json")) {
+        data = await res.json();
+      }
       if (!res.ok) {
         setError(data.error || "Update failed");
       } else {

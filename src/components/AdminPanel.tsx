@@ -2,7 +2,7 @@ import React, { useState, useEffect } from "react";
 import {
   Users, GraduationCap, BrainCircuit, MessageSquare, AlertCircle, Compass, BookOpen,
   Sliders, Bell, Sparkles, Plus, Trash2, Edit, Save, Check, X, ShieldCheck, TrendingUp, Info, UserPlus, LayoutDashboard,
-  Calendar, Award, CheckSquare, ListTodo, Flame, Trophy, Newspaper, Megaphone, Copy, Eye, Clock, List, RefreshCw
+  Calendar, Award, CheckSquare, ListTodo, Flame, Trophy, Newspaper, Megaphone, Copy, Eye, Clock, List, RefreshCw, ChevronDown, ChevronUp
 } from "lucide-react";
 import { allCareers, STREAMS, CompiledCareer } from "../data";
 import { RESOURCES_DATABASE } from "./Resources";
@@ -34,6 +34,9 @@ export default function AdminPanel({ onRefreshData, activeSubTab: externalActive
   const [studentList, setStudentList] = useState<{ id: string; fullName: string; email: string; classLevel: string; registeredAt: string; role?: string }[]>([]);
   const [adminActivities, setAdminActivities] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
+  const [activityTimeRange, setActivityTimeRange] = useState<"Today" | "This Week" | "This Month" | "All Time">("Today");
+  const [showActivityTimeDropdown, setShowActivityTimeDropdown] = useState(false);
+  const [showRegistrationsDrilldown, setShowRegistrationsDrilldown] = useState(false);
 
   // Platform Custom data loaded from DB
   const [platformData, setPlatformData] = useState<any>({
@@ -128,7 +131,7 @@ export default function AdminPanel({ onRefreshData, activeSubTab: externalActive
     try {
       // 1. Load general stats and student directory
       const statsRes = await fetch("/api/admin/stats");
-      if (statsRes.ok) {
+      if (statsRes.ok && statsRes.headers.get("content-type")?.includes("application/json")) {
         const statsData = await statsRes.json();
         setStats(statsData.stats);
         setStudentList(statsData.users || []);
@@ -136,7 +139,7 @@ export default function AdminPanel({ onRefreshData, activeSubTab: externalActive
 
       // 2. Load custom platform configurations
       const platRes = await fetch("/api/platform/data");
-      if (platRes.ok) {
+      if (platRes.ok && platRes.headers.get("content-type")?.includes("application/json")) {
         const platData = await platRes.json();
         setPlatformData(platData);
         if (platData.aiConfig?.systemInstruction) {
@@ -146,7 +149,7 @@ export default function AdminPanel({ onRefreshData, activeSubTab: externalActive
 
       // 3. Load activities list
       const actRes = await fetch("/api/activities");
-      if (actRes.ok) {
+      if (actRes.ok && actRes.headers.get("content-type")?.includes("application/json")) {
         const actData = await actRes.json();
         setAdminActivities(actData.activities || []);
       }
@@ -671,13 +674,49 @@ export default function AdminPanel({ onRefreshData, activeSubTab: externalActive
             {/* Middle row: User Activity & Popular Careers */}
             <div className="grid grid-cols-1 lg:grid-cols-12 gap-5 pt-2">
               {/* User Activity widget */}
-              <div className="lg:col-span-7 border border-slate-200 bg-white rounded-2xl p-5 space-y-4 relative overflow-hidden flex flex-col justify-between shadow-sm">
+              <div className="lg:col-span-7 border border-slate-200 bg-white rounded-2xl p-5 space-y-4 relative overflow-visible flex flex-col justify-between shadow-sm">
                 <div>
-                  <h4 className="text-xs font-bold uppercase tracking-wider text-slate-500">User Activity</h4>
-                  <div className="flex items-center gap-2 mt-1">
-                    <span className="text-xs bg-indigo-50 text-indigo-600 px-2 py-0.5 rounded font-black">📈 Activity Chart</span>
-                    <span className="text-[10px] text-slate-400">Live platform requests</span>
+                  <div className="flex items-center justify-between">
+                    <h4 className="text-xs font-bold uppercase tracking-wider text-slate-500">User Activity</h4>
+                    
+                    {/* Time range selector dropdown */}
+                    <div className="relative">
+                      <button
+                        type="button"
+                        onClick={() => setShowActivityTimeDropdown(!showActivityTimeDropdown)}
+                        className="flex items-center gap-1.5 px-2.5 py-1 text-[11px] font-bold text-slate-600 bg-slate-50 hover:bg-slate-100 border border-slate-200 rounded-lg transition-all cursor-pointer"
+                        title="Filter activity timeline"
+                      >
+                        <span>{activityTimeRange}</span>
+                        <ChevronDown className={`w-3.5 h-3.5 text-slate-400 transition-transform ${showActivityTimeDropdown ? "rotate-180" : ""}`} />
+                      </button>
+
+                      {showActivityTimeDropdown && (
+                        <div className="absolute right-0 mt-1.5 w-32 bg-white rounded-xl border border-slate-200 shadow-xl py-1 z-30 animate-in fade-in slide-in-from-top-1 duration-150">
+                          {(["Today", "This Week", "This Month", "All Time"] as const).map((range) => (
+                            <button
+                              key={range}
+                              type="button"
+                              onClick={() => {
+                                setActivityTimeRange(range);
+                                setShowActivityTimeDropdown(false);
+                              }}
+                              className={`w-full text-left px-3 py-1.5 text-[11px] font-bold transition-all flex items-center justify-between ${
+                                activityTimeRange === range
+                                  ? "text-indigo-600 bg-indigo-50/70"
+                                  : "text-slate-600 hover:bg-slate-50 hover:text-slate-900"
+                              }`}
+                            >
+                              {range}
+                              {activityTimeRange === range && <Check className="w-3 h-3 text-indigo-600" />}
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                    </div>
                   </div>
+
+                  <p className="text-[10px] text-slate-400 mt-1">Live platform requests across sessions ({activityTimeRange})</p>
                 </div>
 
                 {/* SVG Chart area */}
@@ -689,16 +728,41 @@ export default function AdminPanel({ onRefreshData, activeSubTab: externalActive
                     <line x1="0" y1="85" x2="400" y2="85" stroke="#f1f5f9" strokeWidth="1" strokeDasharray="3 3" />
 
                     {/* Area fill */}
-                    <path d="M 0 85 Q 80 30 160 65 T 320 20 L 400 50 L 400 100 L 0 100 Z" fill="url(#grad)" opacity="0.05" />
+                    <path
+                      d={
+                        activityTimeRange === "Today"
+                           ? "M 0 85 Q 80 30 160 65 T 320 20 L 400 50 L 400 100 L 0 100 Z"
+                           : activityTimeRange === "This Week"
+                           ? "M 0 75 Q 90 20 180 50 T 310 35 L 400 30 L 400 100 L 0 100 Z"
+                           : activityTimeRange === "This Month"
+                           ? "M 0 90 Q 70 45 170 30 T 330 15 L 400 25 L 400 100 L 0 100 Z"
+                           : "M 0 80 Q 100 25 200 40 T 340 10 L 400 20 L 400 100 L 0 100 Z"
+                      }
+                      fill="url(#grad)"
+                      opacity="0.05"
+                    />
                     
                     {/* Stroke */}
-                    <path d="M 0 85 Q 80 30 160 65 T 320 20 L 400 50" stroke="#6366f1" strokeWidth="2.5" strokeLinecap="round" />
+                    <path
+                      d={
+                        activityTimeRange === "Today"
+                           ? "M 0 85 Q 80 30 160 65 T 320 20 L 400 50"
+                           : activityTimeRange === "This Week"
+                           ? "M 0 75 Q 90 20 180 50 T 310 35 L 400 30"
+                           : activityTimeRange === "This Month"
+                           ? "M 0 90 Q 70 45 170 30 T 330 15 L 400 25"
+                           : "M 0 80 Q 100 25 200 40 T 340 10 L 400 20"
+                      }
+                      stroke="#6366f1"
+                      strokeWidth="2.5"
+                      strokeLinecap="round"
+                    />
                     
                     {/* Accent dots */}
-                    <circle cx="80" cy="45" r="3.5" fill="#6366f1" />
-                    <circle cx="160" cy="65" r="3.5" fill="#6366f1" />
-                    <circle cx="240" cy="40" r="3.5" fill="#10b981" />
-                    <circle cx="320" cy="20" r="4.5" fill="#ef4444" />
+                    <circle cx="80" cy={activityTimeRange === "Today" ? 45 : 35} r="3.5" fill="#6366f1" />
+                    <circle cx="160" cy={activityTimeRange === "Today" ? 65 : 45} r="3.5" fill="#6366f1" />
+                    <circle cx="240" cy={activityTimeRange === "Today" ? 40 : 30} r="3.5" fill="#10b981" />
+                    <circle cx="320" cy={activityTimeRange === "Today" ? 20 : 25} r="4.5" fill="#ef4444" />
 
                     <defs>
                       <linearGradient id="grad" x1="0%" y1="0%" x2="0%" y2="100%">
@@ -709,14 +773,13 @@ export default function AdminPanel({ onRefreshData, activeSubTab: externalActive
                   </svg>
                 </div>
 
-                {/* Circular Drill down link */}
+                {/* Status indicator row */}
                 <div className="flex justify-between items-center pt-2 border-t border-slate-100">
                   <span className="text-[10px] text-slate-400 font-semibold">Updated 2 mins ago</span>
-                  <div className="w-8 h-8 rounded-full border border-slate-200 bg-slate-50 flex items-center justify-center text-slate-500 hover:text-indigo-600 hover:border-indigo-200 hover:bg-indigo-50/50 transition-all cursor-pointer">
-                    <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" d="M19.5 8.25l-7.5 7.5-7.5-7.5" />
-                    </svg>
-                  </div>
+                  <span className="text-[10px] text-emerald-600 font-medium flex items-center gap-1.5">
+                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
+                    Live Activity
+                  </span>
                 </div>
               </div>
 
@@ -758,7 +821,7 @@ export default function AdminPanel({ onRefreshData, activeSubTab: externalActive
             </div>
 
             {/* Drilldown Section: Realtime Registrations */}
-            <div className="border border-slate-200 bg-white rounded-2xl p-5 space-y-4 shadow-sm">
+            <div id="realtime-registrations-section" className="border border-slate-200 bg-white rounded-2xl p-5 space-y-4 shadow-sm scroll-mt-20">
               <div className="flex items-center justify-between border-b border-slate-100 pb-3">
                 <h3 className="font-extrabold text-xs text-slate-800 flex items-center gap-1.5">
                   <Users className="w-4 h-4 text-indigo-600" />

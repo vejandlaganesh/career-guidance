@@ -106,7 +106,12 @@ export default function CareerQuiz({ user, onQuizCompleted, onOpenCareer }: Care
   useEffect(() => {
     if (user) {
       fetch(`/api/bookmarks/${user.id}`)
-        .then((res) => res.json())
+        .then((res) => {
+          if (res.ok && res.headers.get("content-type")?.includes("application/json")) {
+            return res.json();
+          }
+          return null;
+        })
         .then((data) => {
           if (data && data.bookmarks) {
             setLocalBookmarks(data.bookmarks);
@@ -127,9 +132,11 @@ export default function CareerQuiz({ user, onQuizCompleted, onOpenCareer }: Care
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ userId: user.id, careerId })
       });
-      const data = await res.json();
-      if (data && data.bookmarks) {
-        setLocalBookmarks(data.bookmarks);
+      if (res.ok && res.headers.get("content-type")?.includes("application/json")) {
+        const data = await res.json();
+        if (data && data.bookmarks) {
+          setLocalBookmarks(data.bookmarks);
+        }
       }
     } catch (err) {
       console.error(err);

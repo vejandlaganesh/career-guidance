@@ -2,7 +2,7 @@ import React, { useState, useEffect } from "react";
 import {
   GraduationCap, LayoutDashboard, Compass, BrainCircuit, MessageSquare, BookOpen,
   Bookmark, User as UserIcon, LogOut, Bell, Menu, X, Search, Sparkles, Award,
-  ArrowRight, ShieldCheck, ChevronRight, Sliders, Check, HelpCircle, Users, TrendingUp,
+  ArrowRight, ShieldCheck, ChevronRight, ChevronDown, Sliders, Check, HelpCircle, Users, TrendingUp,
   Calendar, Trash2
 } from "lucide-react";
 
@@ -26,7 +26,7 @@ export default function App() {
   const [user, setUser] = useState<User | null>(null);
   const [activeTab, setActiveTab] = useState("home");
   const [adminActiveSubTab, setAdminActiveSubTab] = useState<"overview" | "students" | "activities" | "careers" | "streams" | "resources" | "quiz" | "notifications" | "ai">("overview");
-  const [authMode, setAuthMode] = useState<"login" | "register" | "admin" | null>(null);
+  const [authMode, setAuthMode] = useState<"login" | "register" | "admin" | "forgot" | null>(null);
   const [savedCareers, setSavedCareers] = useState<string[]>([]);
   const [notifications, setNotifications] = useState<Notification[]>([]);
   const [showNotifications, setShowNotifications] = useState(false);
@@ -50,26 +50,28 @@ export default function App() {
   const fetchStudentActivities = async () => {
     try {
       const res = await fetch("/api/activities");
-      if (res.ok) {
+      const contentType = res.headers.get("content-type");
+      if (res.ok && contentType && contentType.includes("application/json")) {
         const data = await res.json();
         setStudentActivities(data.activities || []);
       }
     } catch (err) {
-      console.error("Failed to fetch custom activities:", err);
+      console.warn("Activities not currently available:", err);
     }
   };
 
   const fetchPlatformData = async () => {
     try {
       const res = await fetch("/api/platform/data");
-      if (res.ok) {
+      const contentType = res.headers.get("content-type");
+      if (res.ok && contentType && contentType.includes("application/json")) {
         const data = await res.json();
         updateDynamicData(data.customCareers, data.customStreams);
         updateResources(data.customResources);
         updateQuizQuestions(data.customQuizQuestions);
       }
     } catch (err) {
-      console.error("Failed to fetch custom platform data:", err);
+      console.warn("Platform data not currently available:", err);
     }
   };
 
@@ -84,23 +86,28 @@ export default function App() {
         setUser(u);
         const isAdminUser = u.role === "admin" || u.email === "admin@educarrier.com" || u.email === "admin@example.com";
         setActiveTab(isAdminUser ? "admin" : "dashboard");
-        loadUserData(u.id);
+        if (u.id) {
+          loadUserData(u.id);
+        }
       }
     } catch (e) {}
   }, []);
 
   const loadUserData = async (userId: string) => {
+    if (!userId) return;
     try {
       // Fetch saved career bookmarks
       const bRes = await fetch(`/api/bookmarks/${userId}`);
-      if (bRes.ok) {
+      const bType = bRes.headers.get("content-type");
+      if (bRes.ok && bType && bType.includes("application/json")) {
         const bData = await bRes.json();
         setSavedCareers(bData.bookmarks || []);
       }
 
       // Fetch student notification list
       const nRes = await fetch(`/api/notifications/${userId}`);
-      if (nRes.ok) {
+      const nType = nRes.headers.get("content-type");
+      if (nRes.ok && nType && nType.includes("application/json")) {
         const nData = await nRes.json();
         const incoming = nData.notifications || [];
         setNotifications((prevNotifications) => {
@@ -119,7 +126,7 @@ export default function App() {
       // Fetch activities list
       fetchStudentActivities();
     } catch (err) {
-      console.error("Failed to load user credentials:", err);
+      console.warn("Could not load user credentials:", err);
     }
   };
 
@@ -236,6 +243,30 @@ export default function App() {
     const isAdminUser = loggedInUser.role === "admin" || loggedInUser.email === "admin@educarrier.com" || loggedInUser.email === "admin@example.com";
     setActiveTab(isAdminUser ? "admin" : "dashboard");
     loadUserData(loggedInUser.id);
+  };
+
+  const handleDemoLogin = async (role: "student" | "admin", targetTab?: string) => {
+    const email = role === "admin" ? "admin@educarrier.com" : "demo@educarrier.com";
+    const password = role === "admin" ? "admin123" : "demo123";
+    try {
+      const res = await fetch("/api/auth/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email, password })
+      });
+      const data = await res.json();
+      if (res.ok && data.user) {
+        handleLoginSuccess(data.user);
+        if (targetTab) {
+          setActiveTab(targetTab);
+        }
+      } else {
+        alert("Demo account login failed. Please try again.");
+      }
+    } catch (err) {
+      console.error("Demo login error:", err);
+      alert("Demo login error. Please check your network connection.");
+    }
   };
 
   const handleLogout = () => {
@@ -409,6 +440,17 @@ export default function App() {
 
   const isAdmin = !!(user && (user.role === "admin" || user.email === "admin@educarrier.com" || user.email === "admin@example.com"));
 
+  const isSeniorStudent = !!(
+    user &&
+    !isAdmin &&
+    (user.classLevel === "Class 11" ||
+      user.classLevel === "Class 12" ||
+      user.classLevel === "11th" ||
+      user.classLevel === "12th" ||
+      user.classLevel?.includes("11") ||
+      user.classLevel?.includes("12"))
+  );
+
   // Sidebar item configuration
   const sidebarItems = isAdmin ? [
     { id: "overview", label: "Dashboard", icon: LayoutDashboard, requiresAuth: true },
@@ -421,7 +463,9 @@ export default function App() {
   ] : [
     { id: "dashboard", label: "Dashboard", icon: LayoutDashboard, requiresAuth: true },
     { id: "activities", label: "Activities & Tasks", icon: Calendar, requiresAuth: true },
-    { id: "streams", label: "Explore Streams", icon: BookOpen, requiresAuth: false },
+    ...(!isSeniorStudent
+      ? [{ id: "streams", label: "Explore Streams", icon: BookOpen, requiresAuth: false }]
+      : []),
     { id: "careers", label: "Career Explorer", icon: Compass, requiresAuth: false },
     { id: "quiz", label: "Career Quiz", icon: BrainCircuit, requiresAuth: true },
     { id: "ai-guide", label: "AI Guide", icon: MessageSquare, requiresAuth: true },
@@ -1236,6 +1280,7 @@ export default function App() {
             setActiveTab(tab);
           }}
           onOpenAuth={(mode) => setAuthMode(mode)}
+          onDemoLogin={handleDemoLogin}
         />
 
         {authMode && (
@@ -1451,56 +1496,69 @@ export default function App() {
 
             {user ? (
               <div className="relative">
-                {isAdmin ? (
-                  <div className="flex items-center gap-2 bg-slate-50 p-1.5 rounded-xl border border-slate-100 select-none text-left">
-                    <div className="w-7 h-7 rounded-lg bg-indigo-100 text-indigo-700 flex items-center justify-center font-bold text-xs">
-                      {user.fullName.charAt(0)}
-                    </div>
-                    <span className="text-xs font-bold text-slate-700 hidden sm:inline">{user.fullName.split(" ")[0]} (Admin)</span>
+                <button
+                  onClick={() => setShowProfileDropdown(!showProfileDropdown)}
+                  className="flex items-center gap-2 cursor-pointer bg-slate-50 p-1.5 rounded-xl border border-slate-100 hover:bg-indigo-50/50 transition-all select-none text-left"
+                  title="User menu"
+                >
+                  <div className="w-7 h-7 rounded-lg bg-indigo-100 text-indigo-700 flex items-center justify-center font-bold text-xs">
+                    {user.fullName.charAt(0)}
                   </div>
-                ) : (
-                  <>
-                    <button
-                      onClick={() => setShowProfileDropdown(!showProfileDropdown)}
-                      className="flex items-center gap-2 cursor-pointer bg-slate-50 p-1.5 rounded-xl border border-slate-100 hover:bg-indigo-50/50 transition-all select-none text-left"
-                    >
-                      <div className="w-7 h-7 rounded-lg bg-indigo-100 text-indigo-700 flex items-center justify-center font-bold text-xs">
-                        {user.fullName.charAt(0)}
-                      </div>
-                      <span className="text-xs font-bold text-slate-600 hidden sm:inline">{user.fullName.split(" ")[0]}</span>
-                    </button>
+                  <span className="text-xs font-bold text-slate-700 hidden sm:inline">
+                    {user.fullName.split(" ")[0]} {isAdmin ? "(Admin)" : ""}
+                  </span>
+                  <ChevronDown className="w-3.5 h-3.5 text-slate-400" />
+                </button>
 
-                    {showProfileDropdown && (
-                      <div className="absolute right-0 mt-2 w-48 bg-white rounded-2xl border border-slate-200 shadow-2xl p-2.5 z-50 animate-in fade-in slide-in-from-top-2 duration-200">
-                        <div className="px-3.5 py-2 border-b border-slate-100 mb-1.5">
-                          <p className="text-xs font-bold text-slate-800 truncate">{user.fullName}</p>
-                          <span className="block text-[10px] text-slate-400 font-bold truncate">{user.email}</span>
-                        </div>
+                {showProfileDropdown && (
+                  <div className="absolute right-0 mt-2 w-48 bg-white rounded-2xl border border-slate-200 shadow-2xl p-2.5 z-50 animate-in fade-in slide-in-from-top-2 duration-200">
+                    <div className="px-3.5 py-2 border-b border-slate-100 mb-1.5">
+                      <p className="text-xs font-bold text-slate-800 truncate">{user.fullName}</p>
+                      <span className="block text-[10px] text-slate-400 font-bold truncate">{user.email}</span>
+                      {isAdmin && (
+                        <span className="inline-block mt-1 px-1.5 py-0.5 rounded bg-amber-50 text-amber-700 font-extrabold text-[9px] uppercase border border-amber-200/50">
+                          Administrator
+                        </span>
+                      )}
+                    </div>
 
-                        <button
-                          onClick={() => {
-                            setActiveTab("profile");
-                            setShowProfileDropdown(false);
-                          }}
-                          className="w-full flex items-center gap-2.5 px-3 py-2 rounded-xl text-xs font-bold text-slate-600 hover:text-indigo-600 hover:bg-indigo-50 transition-all text-left"
-                        >
-                          <UserIcon className="w-4 h-4 text-slate-400" />
-                          Academic Profile
-                        </button>
-
-                        <button
-                          onClick={() => {
-                            handleLogout();
-                            setShowProfileDropdown(false);
-                          }}
-                          className="w-full flex items-center gap-2.5 px-3 py-2 rounded-xl text-xs font-bold text-slate-500 hover:text-rose-600 hover:bg-rose-50 transition-all text-left border-t border-slate-100 mt-1.5 pt-2"
-                        >
-                          <LogOut className="w-4 h-4 text-slate-400" />
-                          Sign Out
-                        </button>
-                      </div>
+                    {!isAdmin && (
+                      <button
+                        onClick={() => {
+                          setActiveTab("profile");
+                          setShowProfileDropdown(false);
+                        }}
+                        className="w-full flex items-center gap-2.5 px-3 py-2 rounded-xl text-xs font-bold text-slate-600 hover:text-indigo-600 hover:bg-indigo-50 transition-all text-left"
+                      >
+                        <UserIcon className="w-4 h-4 text-slate-400" />
+                        Academic Profile
+                      </button>
                     )}
-                  </>
+
+                    {isAdmin && (
+                      <button
+                        onClick={() => {
+                          setActiveTab("admin");
+                          setShowProfileDropdown(false);
+                        }}
+                        className="w-full flex items-center gap-2.5 px-3 py-2 rounded-xl text-xs font-bold text-slate-600 hover:text-indigo-600 hover:bg-indigo-50 transition-all text-left"
+                      >
+                        <LayoutDashboard className="w-4 h-4 text-slate-400" />
+                        Admin Dashboard
+                      </button>
+                    )}
+
+                    <button
+                      onClick={() => {
+                        handleLogout();
+                        setShowProfileDropdown(false);
+                      }}
+                      className="w-full flex items-center gap-2.5 px-3 py-2 rounded-xl text-xs font-bold text-slate-500 hover:text-rose-600 hover:bg-rose-50 transition-all text-left border-t border-slate-100 mt-1.5 pt-2"
+                    >
+                      <LogOut className="w-4 h-4 text-slate-400" />
+                      Sign Out
+                    </button>
+                  </div>
                 )}
               </div>
             ) : (

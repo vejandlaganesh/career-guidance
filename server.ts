@@ -4,300 +4,22 @@ import fs from "fs";
 import { createServer as createViteServer } from "vite";
 import { GoogleGenAI } from "@google/genai";
 import dotenv from "dotenv";
-import { initializeApp, getApps, getApp } from "firebase/app";
-import { getFirestore, doc, setDoc, getDocs, getDoc, collection, query, limit } from "firebase/firestore";
+import {
+  initDb,
+  runQuery,
+  getRow,
+  getAllRows
+} from "./src/db/sqlite.ts";
 
 dotenv.config();
 
-// Firebase Admin Initialization
-let db: any = null;
-try {
-  let firebaseConfig;
-  const serviceAccountPath = path.join(process.cwd(), "firebase-applet-config.json");
-  
-  if (process.env.FIREBASE_CONFIG) {
-    // Attempt to parse from environment variable first (for production)
-    firebaseConfig = JSON.parse(process.env.FIREBASE_CONFIG);
-  } else if (fs.existsSync(serviceAccountPath)) {
-    // Fallback to local file (for development)
-    firebaseConfig = JSON.parse(fs.readFileSync(serviceAccountPath, "utf-8"));
-  }
-
-  if (firebaseConfig) {
-    const app = getApps().length === 0 ? initializeApp(firebaseConfig) : getApp();
-    db = getFirestore(app);
-    console.log("Firebase initialized and Firestore connected.");
-  } else {
-    console.warn("Firebase config not found in env or file. Firestore sync disabled.");
-  }
-} catch (error) {
-  console.error("Failed to initialize Firebase:", error);
-}
-
 const app = express();
-const PORT = 3000;
+const portArgIndex = process.argv.indexOf("--port");
+const argPort = portArgIndex !== -1 && process.argv[portArgIndex + 1] ? parseInt(process.argv[portArgIndex + 1], 10) : undefined;
+// Dev server must run on port 3000 in development; use process.env.PORT in production
+const PORT = argPort || (process.env.NODE_ENV === "production" ? Number(process.env.PORT) || 3000 : 3000);
 
 app.use(express.json());
-
-// Lightweight JSON file-based database for persistence in the sandboxed container
-const DB_FILE = path.join(process.cwd(), "data-store.json");
-
-interface DataStore {
-  users: Record<string, any>;
-  savedCareers: Record<string, string[]>; // userId -> careerIds[]
-  quizAttempts: Record<string, any[]>; // userId -> quizAttempts[]
-  conversations: Record<string, any[]>; // userId -> conversationHistory[]
-  notifications: Record<string, any[]>; // userId -> notifications[]
-  customCareers: any[];
-  customStreams: any[];
-  customResources: any[];
-  customQuizQuestions: any[];
-  customColleges: any[];
-  customExams: any[];
-  customCourses: any[];
-  customSkills: any[];
-  customRoadmaps: any[];
-  customRecommendations: any[];
-  customActivities?: any[];
-  aiConfig: { systemInstruction?: string; temperature?: number };
-}
-
-function loadData(): DataStore {
-  if (fs.existsSync(DB_FILE)) {
-    try {
-      const parsed = JSON.parse(fs.readFileSync(DB_FILE, "utf-8"));
-      
-      // Ensure all fields are initialized
-      if (!parsed.customCareers) parsed.customCareers = [];
-      if (!parsed.customStreams) parsed.customStreams = [];
-      if (!parsed.customResources) parsed.customResources = [];
-      if (!parsed.customQuizQuestions) parsed.customQuizQuestions = [];
-      if (!parsed.customColleges) parsed.customColleges = [];
-      if (!parsed.customExams) parsed.customExams = [];
-      if (!parsed.customCourses) parsed.customCourses = [];
-      if (!parsed.customSkills) parsed.customSkills = [];
-      if (!parsed.customRoadmaps) parsed.customRoadmaps = [];
-      if (!parsed.customRecommendations) parsed.customRecommendations = [];
-      if (!parsed.customActivities) parsed.customActivities = [];
-      if (!parsed.aiConfig) parsed.aiConfig = {};
-
-      if (!parsed.users["admin@educarrier.com"]) {
-        parsed.users["admin@educarrier.com"] = {
-          id: "admin-user",
-          fullName: "System Admin",
-          email: "admin@educarrier.com",
-          passwordHash: "admin123",
-          classLevel: "Class 12",
-          interests: [],
-          skills: [],
-          preferredSubjects: [],
-          careerInterests: [],
-          role: "admin"
-        };
-        fs.writeFileSync(DB_FILE, JSON.stringify(parsed, null, 2), "utf-8");
-      }
-      return parsed;
-    } catch (e) {
-      console.error("Error reading data store file, resetting:", e);
-    }
-  }
-  const defaultData: DataStore = {
-    users: {
-      "demo@educarrier.com": {
-        id: "demo-user",
-        fullName: "Rahul Sharma",
-        email: "demo@educarrier.com",
-        passwordHash: "demo123", // mock password
-        classLevel: "Class 11",
-        interests: ["Coding", "Analytics", "Space", "Science"],
-        skills: ["Python basics", "Mathematics", "Logical reasoning"],
-        preferredSubjects: ["Mathematics", "Physics", "Computer Science"],
-        careerInterests: ["AI Engineer", "Software Engineer"],
-        role: "student"
-      },
-      "admin@educarrier.com": {
-        id: "admin-user",
-        fullName: "System Admin",
-        email: "admin@educarrier.com",
-        passwordHash: "admin123",
-        classLevel: "Class 12",
-        interests: [],
-        skills: [],
-        preferredSubjects: [],
-        careerInterests: [],
-        role: "admin"
-      }
-    },
-    savedCareers: {
-      "demo-user": ["ai-engineer", "data-scientist"]
-    },
-    quizAttempts: {
-      "demo-user": []
-    },
-    conversations: {
-      "demo-user": []
-    },
-    notifications: {
-      "demo-user": [
-        {
-          id: "n-1",
-          title: "Welcome to Edu Carrier! \ud83c\udf93",
-          body: "Get started by taking our career matching quiz to see your custom recommendations.",
-          timestamp: new Date().toISOString(),
-          read: false
-        }
-      ]
-    },
-    customCareers: [],
-    customStreams: [],
-    customResources: [],
-    customQuizQuestions: [],
-    customColleges: [],
-    customExams: [],
-    customCourses: [],
-    customSkills: [],
-    customRoadmaps: [],
-    customRecommendations: [],
-    customActivities: [],
-    aiConfig: {}
-  };
-  saveData(defaultData);
-  return defaultData;
-}
-
-function saveData(data: DataStore) {
-  try {
-    fs.writeFileSync(DB_FILE, JSON.stringify(data, null, 2), "utf-8");
-    if (db) {
-      syncToFirestore(data).catch((err: any) => {
-        console.error("Error syncing to Firestore:", err);
-      });
-    }
-  } catch (e: any) {
-    console.error("Error saving data store:", e);
-  }
-}
-
-async function syncToFirestore(data: DataStore) {
-  if (!db) return;
-  // Use independent promises rather than batch to avoid 500 limit on large datasets
-  const promises: Promise<any>[] = [];
-  
-  // Users
-  for (const [email, userObj] of Object.entries(data.users)) {
-    if (userObj && userObj.id) {
-      promises.push(setDoc(doc(db, "users", userObj.id), userObj, { merge: true }));
-    }
-  }
-  
-  // SavedCareers
-  for (const [userId, careers] of Object.entries(data.savedCareers)) {
-    promises.push(setDoc(doc(db, "savedCareers", userId), { careers }, { merge: true }));
-  }
-
-  // QuizAttempts
-  for (const [userId, attempts] of Object.entries(data.quizAttempts)) {
-    promises.push(setDoc(doc(db, "quizAttempts", userId), { attempts }, { merge: true }));
-  }
-
-  // Conversations
-  for (const [userId, history] of Object.entries(data.conversations)) {
-    promises.push(setDoc(doc(db, "conversations", userId), { history }, { merge: true }));
-  }
-
-  // Notifications
-  for (const [userId, notifs] of Object.entries(data.notifications)) {
-    promises.push(setDoc(doc(db, "notifications", userId), { notifs }, { merge: true }));
-  }
-
-  // System Config
-  promises.push(setDoc(doc(db, "system_config", "main"), {
-    customCareers: data.customCareers || [],
-    customStreams: data.customStreams || [],
-    customResources: data.customResources || [],
-    customQuizQuestions: data.customQuizQuestions || [],
-    customColleges: data.customColleges || [],
-    customExams: data.customExams || [],
-    customCourses: data.customCourses || [],
-    customSkills: data.customSkills || [],
-    customRoadmaps: data.customRoadmaps || [],
-    customRecommendations: data.customRecommendations || [],
-    customActivities: data.customActivities || [],
-    aiConfig: data.aiConfig || {}
-  }, { merge: true }));
-
-  await Promise.all(promises);
-}
-
-async function hydrateStoreFromFirestore() {
-  if (!db) return;
-  try {
-    const usersSnap = await getDocs(collection(db, "users"));
-    if (!usersSnap.empty) {
-      const dbUsers: Record<string, any> = {};
-      usersSnap.forEach((doc: any) => {
-        const u = doc.data();
-        if (u.email) {
-          dbUsers[u.email.toLowerCase()] = u;
-        }
-      });
-      store.users = dbUsers;
-    }
-
-    const scSnap = await getDocs(collection(db, "savedCareers"));
-    if (!scSnap.empty) {
-      scSnap.forEach((doc: any) => {
-        store.savedCareers[doc.id] = doc.data().careers || [];
-      });
-    }
-
-    const qaSnap = await getDocs(collection(db, "quizAttempts"));
-    if (!qaSnap.empty) {
-      qaSnap.forEach((doc: any) => {
-        store.quizAttempts[doc.id] = doc.data().attempts || [];
-      });
-    }
-
-    const convSnap = await getDocs(collection(db, "conversations"));
-    if (!convSnap.empty) {
-      convSnap.forEach((doc: any) => {
-        store.conversations[doc.id] = doc.data().history || [];
-      });
-    }
-
-    const notifSnap = await getDocs(collection(db, "notifications"));
-    if (!notifSnap.empty) {
-      notifSnap.forEach((doc: any) => {
-        store.notifications[doc.id] = doc.data().notifs || [];
-      });
-    }
-
-    const sysSnap = await getDoc(doc(db, "system_config", "main"));
-    if (sysSnap.exists()) {
-      const sysData = sysSnap.data() || {};
-      store.customCareers = sysData.customCareers || [];
-      store.customStreams = sysData.customStreams || [];
-      store.customResources = sysData.customResources || [];
-      store.customQuizQuestions = sysData.customQuizQuestions || [];
-      store.customColleges = sysData.customColleges || [];
-      store.customExams = sysData.customExams || [];
-      store.customCourses = sysData.customCourses || [];
-      store.customSkills = sysData.customSkills || [];
-      store.customRoadmaps = sysData.customRoadmaps || [];
-      store.customRecommendations = sysData.customRecommendations || [];
-      store.customActivities = sysData.customActivities || [];
-      store.aiConfig = sysData.aiConfig || {};
-    }
-    
-    console.log("Hydrated in-memory store from Firestore");
-  } catch (error: any) {
-    console.error("Failed to hydrate store from Firestore:", error);
-  }
-}
-
-// Global In-Memory representation synced with File
-let store = loadData();
-hydrateStoreFromFirestore();
 
 // Lazy initialization of GoogleGenAI Client
 let genAIClient: GoogleGenAI | null = null;
@@ -319,9 +41,37 @@ function getGenAI(): GoogleGenAI {
   return genAIClient;
 }
 
-// Helper to find a user from auth tokens or email
-function findUserByEmail(email: string) {
-  return store.users[email.toLowerCase()];
+// ----------------------------------------------------------------------------
+// Relational SQL Parsing Helpers
+// ----------------------------------------------------------------------------
+function parseUser(row: any) {
+  if (!row) return null;
+  return {
+    ...row,
+    interests: JSON.parse(row.interests || "[]"),
+    skills: JSON.parse(row.skills || "[]"),
+    preferredSubjects: JSON.parse(row.preferredSubjects || "[]"),
+    careerInterests: JSON.parse(row.careerInterests || "[]"),
+  };
+}
+
+function parseQuizAttempt(row: any) {
+  if (!row) return null;
+  return {
+    ...row,
+    answers: JSON.parse(row.answers || "{}"),
+    vector: JSON.parse(row.vector || "{}"),
+  };
+}
+
+function parseActivity(row: any) {
+  if (!row) return null;
+  return {
+    ...row,
+    completions: JSON.parse(row.completions || "[]"),
+    participants: JSON.parse(row.participants || "[]"),
+    results: JSON.parse(row.results || "[]"),
+  };
 }
 
 // ----------------------------------------------------------------------------
@@ -329,235 +79,372 @@ function findUserByEmail(email: string) {
 // ----------------------------------------------------------------------------
 
 // Auth Endpoints
-app.post("/api/auth/register", (req, res) => {
+app.post("/api/auth/register", async (req, res) => {
   const { fullName, email, password, classLevel } = req.body;
   if (!fullName || !email || !password || !classLevel) {
     return res.status(400).json({ error: "All fields are required" });
   }
 
-  const existing = findUserByEmail(email);
-  if (existing) {
-    return res.status(400).json({ error: "Email is already registered" });
-  }
-
-  const emailLower = email.toLowerCase();
-  const isAdminEmail = emailLower.endsWith("@educarrier.com") || 
-                       emailLower.endsWith("@educarrer.com") || 
-                       emailLower.endsWith("@admin.com");
-  const assignedRole = isAdminEmail ? "admin" : "student";
-
-  const userId = "u-" + Math.random().toString(36).substring(2, 11);
-  const newUser = {
-    id: userId,
-    fullName,
-    email: emailLower,
-    passwordHash: password, // simplified hashing for preview sandbox
-    classLevel,
-    interests: [],
-    skills: [],
-    preferredSubjects: [],
-    careerInterests: [],
-    role: assignedRole
-  };
-
-  store.users[email.toLowerCase()] = newUser;
-  store.savedCareers[userId] = [];
-  store.quizAttempts[userId] = [];
-  store.conversations[userId] = [];
-  store.notifications[userId] = [
-    {
-      id: "n-reg",
-      title: "Account Created Successfully! \u2728",
-      body: "Welcome aboard, " + fullName + "! Start exploring Streams or Career details.",
-      timestamp: new Date().toISOString(),
-      read: false
+  try {
+    const emailLower = email.toLowerCase().trim();
+    const existing = await getRow("SELECT id FROM users WHERE LOWER(email) = LOWER(?)", [emailLower]);
+    if (existing) {
+      return res.status(400).json({ error: "Email is already registered" });
     }
-  ];
 
-  saveData(store);
-  res.json({ message: "Registration successful", user: newUser });
+    const isAdminEmail = emailLower.endsWith("@educarrier.com") || 
+                         emailLower.endsWith("@educarrer.com") || 
+                         emailLower.endsWith("@admin.com");
+    const assignedRole = isAdminEmail ? "admin" : "student";
+
+    const userId = "u-" + Math.random().toString(36).substring(2, 11);
+    
+    // SQL relational write
+    await runQuery(
+      `INSERT INTO users (id, fullName, email, passwordHash, classLevel, interests, skills, preferredSubjects, careerInterests, role, registeredAt) 
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        userId,
+        fullName,
+        emailLower,
+        password,
+        classLevel,
+        JSON.stringify([]),
+        JSON.stringify([]),
+        JSON.stringify([]),
+        JSON.stringify([]),
+        assignedRole,
+        new Date().toISOString()
+      ]
+    );
+
+    // SQL notification insert
+    await runQuery(
+      "INSERT INTO notifications (id, userId, title, body, timestamp, read) VALUES (?, ?, ?, ?, ?, ?)",
+      [
+        "n-reg",
+        userId,
+        "Account Created Successfully! ✨",
+        "Welcome aboard, " + fullName + "! Start exploring Streams or Career details.",
+        new Date().toISOString(),
+        0
+      ]
+    );
+
+    const newUser = {
+      id: userId,
+      fullName,
+      email: emailLower,
+      passwordHash: password,
+      classLevel,
+      interests: [],
+      skills: [],
+      preferredSubjects: [],
+      careerInterests: [],
+      role: assignedRole
+    };
+
+    res.json({ message: "Registration successful", user: newUser });
+  } catch (error) {
+    console.error("Registration error in SQL:", error);
+    res.status(500).json({ error: "Failed to complete registration" });
+  }
 });
 
-app.post("/api/auth/login", (req, res) => {
+app.post("/api/auth/login", async (req, res) => {
   const { email, password } = req.body;
   if (!email || !password) {
     return res.status(400).json({ error: "Email and password are required" });
   }
 
-  const user = findUserByEmail(email);
-  if (!user || user.passwordHash !== password) {
-    return res.status(401).json({ error: "Invalid email or password" });
+  try {
+    const userRow = await getRow("SELECT * FROM users WHERE LOWER(email) = LOWER(?)", [email.toLowerCase().trim()]);
+    if (!userRow || userRow.passwordHash !== password) {
+      return res.status(401).json({ error: "Invalid email or password" });
+    }
+
+    res.json({ message: "Login successful", user: parseUser(userRow) });
+  } catch (error) {
+    console.error("Login error in SQL:", error);
+    res.status(500).json({ error: "Failed to execute login" });
+  }
+});
+
+app.post("/api/auth/reset-password", async (req, res) => {
+  const { email, newPassword } = req.body;
+  if (!email || !newPassword) {
+    return res.status(400).json({ error: "Email and new password are required" });
   }
 
-  res.json({ message: "Login successful", user });
+  if (typeof newPassword !== "string" || newPassword.length < 6) {
+    return res.status(400).json({ error: "Password must be at least 6 characters" });
+  }
+
+  try {
+    const emailLower = email.toLowerCase().trim();
+    const userRow = await getRow("SELECT * FROM users WHERE LOWER(email) = LOWER(?)", [emailLower]);
+    if (!userRow) {
+      return res.status(404).json({ error: "No account registered with this email address" });
+    }
+
+    await runQuery("UPDATE users SET passwordHash = ? WHERE id = ?", [newPassword, userRow.id]);
+
+    // Insert notification
+    await runQuery(
+      "INSERT INTO notifications (id, userId, title, body, timestamp, read) VALUES (?, ?, ?, ?, ?, ?)",
+      [
+        "n-" + Math.random().toString(36).substring(2, 10),
+        userRow.id,
+        "Password Reset Successful 🔐",
+        "Your account password was updated successfully. If this wasn't you, please contact support.",
+        new Date().toISOString(),
+        0
+      ]
+    );
+
+    res.json({ message: "Password updated successfully" });
+  } catch (error) {
+    console.error("Password reset error in SQL:", error);
+    res.status(500).json({ error: "Failed to reset password" });
+  }
 });
 
 // Profile Endpoints
-app.get("/api/profile/:userId", (req, res) => {
+app.get("/api/profile/:userId", async (req, res) => {
   const { userId } = req.params;
-  const user = Object.values(store.users).find((u) => u.id === userId);
-  if (!user) {
-    return res.status(404).json({ error: "User not found" });
+  try {
+    const userRow = await getRow("SELECT * FROM users WHERE id = ?", [userId]);
+    if (!userRow) {
+      return res.status(404).json({ error: "User not found" });
+    }
+    res.json(parseUser(userRow));
+  } catch (error) {
+    console.error("Profile GET error in SQL:", error);
+    res.status(500).json({ error: "Failed to fetch user profile" });
   }
-  res.json(user);
 });
 
-app.put("/api/profile/:userId", (req, res) => {
+app.put("/api/profile/:userId", async (req, res) => {
   const { userId } = req.params;
-  const userKey = Object.keys(store.users).find((k) => store.users[k].id === userId);
-  if (!userKey) {
-    return res.status(404).json({ error: "User not found" });
+  try {
+    const userRow = await getRow("SELECT * FROM users WHERE id = ?", [userId]);
+    if (!userRow) {
+      return res.status(404).json({ error: "User not found" });
+    }
+
+    const fullName = req.body.fullName || userRow.fullName;
+    const classLevel = req.body.classLevel || userRow.classLevel;
+    const interests = req.body.interests || JSON.parse(userRow.interests || "[]");
+    const skills = req.body.skills || JSON.parse(userRow.skills || "[]");
+    const preferredSubjects = req.body.preferredSubjects || JSON.parse(userRow.preferredSubjects || "[]");
+    const careerInterests = req.body.careerInterests || JSON.parse(userRow.careerInterests || "[]");
+
+    await runQuery(
+      `UPDATE users 
+       SET fullName = ?, classLevel = ?, interests = ?, skills = ?, preferredSubjects = ?, careerInterests = ? 
+       WHERE id = ?`,
+      [
+        fullName,
+        classLevel,
+        JSON.stringify(interests),
+        JSON.stringify(skills),
+        JSON.stringify(preferredSubjects),
+        JSON.stringify(careerInterests),
+        userId
+      ]
+    );
+
+    const updatedUserRow = await getRow("SELECT * FROM users WHERE id = ?", [userId]);
+    res.json(parseUser(updatedUserRow));
+  } catch (error) {
+    console.error("Profile PUT error in SQL:", error);
+    res.status(500).json({ error: "Failed to update profile" });
   }
-
-  const updatedUser = {
-    ...store.users[userKey],
-    fullName: req.body.fullName || store.users[userKey].fullName,
-    classLevel: req.body.classLevel || store.users[userKey].classLevel,
-    interests: req.body.interests || store.users[userKey].interests,
-    skills: req.body.skills || store.users[userKey].skills,
-    preferredSubjects: req.body.preferredSubjects || store.users[userKey].preferredSubjects,
-    careerInterests: req.body.careerInterests || store.users[userKey].careerInterests
-  };
-
-  store.users[userKey] = updatedUser;
-  saveData(store);
-  res.json(updatedUser);
 });
 
 // Bookmarks / Saved Careers
-app.get("/api/saved-careers/:userId", (req, res) => {
+app.get("/api/saved-careers/:userId", async (req, res) => {
   const { userId } = req.params;
-  res.json(store.savedCareers[userId] || []);
+  try {
+    const rows = await getAllRows("SELECT careerId FROM saved_careers WHERE userId = ?", [userId]);
+    res.json(rows.map((r) => r.careerId));
+  } catch (error) {
+    console.error("Saved careers GET error in SQL:", error);
+    res.status(500).json({ error: "Failed to fetch saved careers" });
+  }
 });
 
-app.get("/api/bookmarks/:userId", (req, res) => {
+app.get("/api/bookmarks/:userId", async (req, res) => {
   const { userId } = req.params;
-  res.json({ bookmarks: store.savedCareers[userId] || [] });
+  try {
+    const rows = await getAllRows("SELECT careerId FROM saved_careers WHERE userId = ?", [userId]);
+    res.json({ bookmarks: rows.map((r) => r.careerId) });
+  } catch (error) {
+    console.error("Bookmarks GET error in SQL:", error);
+    res.status(500).json({ error: "Failed to fetch bookmarks" });
+  }
 });
 
-app.post("/api/bookmarks/toggle", (req, res) => {
+app.post("/api/bookmarks/toggle", async (req, res) => {
   const { userId, careerId } = req.body;
   if (!userId || !careerId) {
     return res.status(400).json({ error: "userId and careerId are required" });
   }
 
-  if (!store.savedCareers[userId]) {
-    store.savedCareers[userId] = [];
-  }
+  try {
+    const existing = await getRow("SELECT 1 FROM saved_careers WHERE userId = ? AND careerId = ?", [userId, careerId]);
+    if (existing) {
+      await runQuery("DELETE FROM saved_careers WHERE userId = ? AND careerId = ?", [userId, careerId]);
+    } else {
+      await runQuery("INSERT INTO saved_careers (userId, careerId) VALUES (?, ?)", [userId, careerId]);
+    }
 
-  const idx = store.savedCareers[userId].indexOf(careerId);
-  if (idx > -1) {
-    store.savedCareers[userId].splice(idx, 1);
-  } else {
-    store.savedCareers[userId].push(careerId);
+    const rows = await getAllRows("SELECT careerId FROM saved_careers WHERE userId = ?", [userId]);
+    res.json({ bookmarks: rows.map((r) => r.careerId) });
+  } catch (error) {
+    console.error("Bookmarks toggle error in SQL:", error);
+    res.status(500).json({ error: "Failed to toggle bookmark" });
   }
-
-  saveData(store);
-  res.json({ bookmarks: store.savedCareers[userId] });
 });
 
-app.post("/api/saved-careers/:userId", (req, res) => {
+app.post("/api/saved-careers/:userId", async (req, res) => {
   const { userId } = req.params;
   const { careerId } = req.body;
   if (!careerId) {
     return res.status(400).json({ error: "Career ID is required" });
   }
 
-  if (!store.savedCareers[userId]) {
-    store.savedCareers[userId] = [];
+  try {
+    await runQuery("INSERT OR IGNORE INTO saved_careers (userId, careerId) VALUES (?, ?)", [userId, careerId]);
+    const rows = await getAllRows("SELECT careerId FROM saved_careers WHERE userId = ?", [userId]);
+    res.json(rows.map((r) => r.careerId));
+  } catch (error) {
+    console.error("Saved careers POST error in SQL:", error);
+    res.status(500).json({ error: "Failed to save career" });
   }
-
-  if (!store.savedCareers[userId].includes(careerId)) {
-    store.savedCareers[userId].push(careerId);
-    saveData(store);
-  }
-
-  res.json(store.savedCareers[userId]);
 });
 
-app.delete("/api/saved-careers/:userId/:careerId", (req, res) => {
+app.delete("/api/saved-careers/:userId/:careerId", async (req, res) => {
   const { userId, careerId } = req.params;
-  if (store.savedCareers[userId]) {
-    store.savedCareers[userId] = store.savedCareers[userId].filter((id) => id !== careerId);
-    saveData(store);
+  try {
+    await runQuery("DELETE FROM saved_careers WHERE userId = ? AND careerId = ?", [userId, careerId]);
+    const rows = await getAllRows("SELECT careerId FROM saved_careers WHERE userId = ?", [userId]);
+    res.json(rows.map((r) => r.careerId));
+  } catch (error) {
+    console.error("Saved careers DELETE error in SQL:", error);
+    res.status(500).json({ error: "Failed to delete saved career" });
   }
-  res.json(store.savedCareers[userId] || []);
 });
 
 // Quiz Attempts
-app.get("/api/quiz/:userId", (req, res) => {
+app.get("/api/quiz/:userId", async (req, res) => {
   const { userId } = req.params;
-  res.json(store.quizAttempts[userId] || []);
+  try {
+    const rows = await getAllRows("SELECT * FROM quiz_attempts WHERE userId = ? ORDER BY id ASC", [userId]);
+    res.json(rows.map(parseQuizAttempt));
+  } catch (error) {
+    console.error("Quiz attempts GET error in SQL:", error);
+    res.status(500).json({ error: "Failed to fetch quiz attempts" });
+  }
 });
 
-app.post("/api/quiz/:userId", (req, res) => {
+app.post("/api/quiz/:userId", async (req, res) => {
   const { userId } = req.params;
   const { answers, vector } = req.body;
 
-  if (!store.quizAttempts[userId]) {
-    store.quizAttempts[userId] = [];
+  try {
+    const timestamp = new Date().toISOString();
+    await runQuery(
+      "INSERT INTO quiz_attempts (userId, answers, vector, timestamp) VALUES (?, ?, ?, ?)",
+      [userId, JSON.stringify(answers || {}), JSON.stringify(vector || {}), timestamp]
+    );
+
+    // Insert Notification SQL relational way
+    await runQuery(
+      "INSERT INTO notifications (id, userId, title, body, timestamp, read) VALUES (?, ?, ?, ?, ?, ?)",
+      [
+        "n-quiz-" + Date.now(),
+        userId,
+        "AI Career Quiz Completed 🎓",
+        "Your interests have been mapped. Check your personalized match scores on the Dashboard!",
+        timestamp,
+        0
+      ]
+    );
+
+    res.json({
+      answers,
+      vector,
+      timestamp
+    });
+  } catch (error) {
+    console.error("Quiz attempts POST error in SQL:", error);
+    res.status(500).json({ error: "Failed to save quiz attempt" });
   }
-
-  const attempt = {
-    answers,
-    vector,
-    timestamp: new Date().toISOString()
-  };
-
-  store.quizAttempts[userId].push(attempt);
-
-  // Add notification
-  if (!store.notifications[userId]) {
-    store.notifications[userId] = [];
-  }
-  store.notifications[userId].unshift({
-    id: "n-quiz-" + Date.now(),
-    title: "AI Career Quiz Completed \ud83c\udf93",
-    body: "Your interests have been mapped. Check your personalized match scores on the Dashboard!",
-    timestamp: new Date().toISOString(),
-    read: false
-  });
-
-  saveData(store);
-  res.json(attempt);
 });
 
 // Notifications
-app.get("/api/notifications/:userId", (req, res) => {
+app.get("/api/notifications/:userId", async (req, res) => {
   const { userId } = req.params;
-  res.json({ notifications: store.notifications[userId] || [] });
+  try {
+    const rows = await getAllRows("SELECT * FROM notifications WHERE userId = ? ORDER BY timestamp DESC", [userId]);
+    const notifications = rows.map((r) => ({
+      ...r,
+      read: r.read === 1
+    }));
+    res.json({ notifications });
+  } catch (error) {
+    console.error("Notifications GET error in SQL:", error);
+    res.status(500).json({ error: "Failed to fetch notifications" });
+  }
 });
 
-app.post("/api/notifications/read/:userId", (req, res) => {
+app.post("/api/notifications/read/:userId", async (req, res) => {
   const { userId } = req.params;
-  if (store.notifications[userId]) {
-    store.notifications[userId] = store.notifications[userId].map((n) => ({ ...n, read: true }));
-    saveData(store);
+  try {
+    await runQuery("UPDATE notifications SET read = 1 WHERE userId = ?", [userId]);
+    const rows = await getAllRows("SELECT * FROM notifications WHERE userId = ? ORDER BY timestamp DESC", [userId]);
+    const notifications = rows.map((r) => ({
+      ...r,
+      read: r.read === 1
+    }));
+    res.json({ success: true, notifications });
+  } catch (error) {
+    console.error("Notifications bulk read error in SQL:", error);
+    res.status(500).json({ error: "Failed to mark notifications as read" });
   }
-  res.json({ success: true, notifications: store.notifications[userId] || [] });
 });
 
-app.post("/api/notifications/:userId/:notificationId/read", (req, res) => {
+app.post("/api/notifications/:userId/:notificationId/read", async (req, res) => {
   const { userId, notificationId } = req.params;
-  if (store.notifications[userId]) {
-    store.notifications[userId] = store.notifications[userId].map((n) => {
-      if (n.id === notificationId) {
-        return { ...n, read: true };
-      }
-      return n;
-    });
-    saveData(store);
+  try {
+    await runQuery("UPDATE notifications SET read = 1 WHERE userId = ? AND id = ?", [userId, notificationId]);
+    const rows = await getAllRows("SELECT * FROM notifications WHERE userId = ? ORDER BY timestamp DESC", [userId]);
+    const notifications = rows.map((r) => ({
+      ...r,
+      read: r.read === 1
+    }));
+    res.json({ notifications });
+  } catch (error) {
+    console.error("Notification single read error in SQL:", error);
+    res.status(500).json({ error: "Failed to mark notification as read" });
   }
-  res.json({ notifications: store.notifications[userId] || [] });
 });
 
-app.delete("/api/notifications/:userId/:notificationId", (req, res) => {
+app.delete("/api/notifications/:userId/:notificationId", async (req, res) => {
   const { userId, notificationId } = req.params;
-  if (store.notifications[userId]) {
-    store.notifications[userId] = store.notifications[userId].filter((n) => n.id !== notificationId);
-    saveData(store);
+  try {
+    await runQuery("DELETE FROM notifications WHERE userId = ? AND id = ?", [userId, notificationId]);
+    const rows = await getAllRows("SELECT * FROM notifications WHERE userId = ? ORDER BY timestamp DESC", [userId]);
+    const notifications = rows.map((r) => ({
+      ...r,
+      read: r.read === 1
+    }));
+    res.json({ success: true, notifications });
+  } catch (error) {
+    console.error("Notification DELETE error in SQL:", error);
+    res.status(500).json({ error: "Failed to delete notification" });
   }
-  res.json({ success: true, notifications: store.notifications[userId] || [] });
 });
 
 // AI Career Guide Chatbot
@@ -567,37 +454,42 @@ app.post("/api/ai/chat", async (req, res) => {
     return res.status(400).json({ error: "Message is required" });
   }
 
-  // Get user details for rich context setting
-  let userContext = "";
-  if (userId) {
-    const user = Object.values(store.users).find((u) => u.id === userId);
-    if (user) {
-      userContext = `\n[Student Profile Context]:
-- Student Name: ${user.fullName}
-- Education Level: ${user.classLevel}
-- Interests: ${user.interests.join(", ") || "None listed yet"}
-- Skills: ${user.skills.join(", ") || "None listed yet"}
-- Preferred Subjects: ${user.preferredSubjects.join(", ") || "None listed yet"}
-- Career Interests: ${user.careerInterests.join(", ") || "None listed yet"}`;
+  try {
+    // Get user details for rich context setting
+    let userContext = "";
+    if (userId) {
+      const userRow = await getRow("SELECT * FROM users WHERE id = ?", [userId]);
+      if (userRow) {
+        const u = parseUser(userRow);
+        userContext = `\n[Student Profile Context]:
+- Student Name: ${u.fullName}
+- Education Level: ${u.classLevel}
+- Interests: ${u.interests.join(", ") || "None listed yet"}
+- Skills: ${u.interests.join(", ") || "None listed yet"}
+- Preferred Subjects: ${u.preferredSubjects.join(", ") || "None listed yet"}
+- Career Interests: ${u.careerInterests.join(", ") || "None listed yet"}`;
+      }
     }
-  }
 
-  const customInstruction = store.aiConfig?.systemInstruction;
-  const systemInstruction = customInstruction
-    ? `${customInstruction}${userContext}`
-    : `You are "Edu Carrier AI", an empathetic, highly knowledgeable, and encouraging professional career guidance counselor for Indian students (primarily Class 6 to 12 and early college).
+    // Get aiConfig from SQL database system_config
+    const configRow = await getRow("SELECT value FROM system_config WHERE key = 'aiConfig'");
+    const aiConfig = configRow ? JSON.parse(configRow.value) : {};
+    
+    const customInstruction = aiConfig.systemInstruction;
+    const systemInstruction = customInstruction
+      ? `${customInstruction}${userContext}`
+      : `You are "Edu Carrier AI", an empathetic, highly knowledgeable, and encouraging professional career guidance counselor for Indian students (primarily Class 6 to 12 and early college).
 Your goal is to answer queries about educational streams (MPC, BiPC, MEC, Arts), colleges, entrance exams, courses, and careers.
 Provide structured, step-by-step career roads, skill-gap advice, and course selections.
 Format your responses with clear markdown headers, bold key phrases, bullet points, and neat spacing. Avoid massive blocks of text.
 Keep explanations jargon-free, objective, and realistic yet inspirational. Do not make up fake details or fake scholarships.
 Whenever the student provides profile details, tailor your advice directly to their interests and academic levels.${userContext}`;
 
-  try {
     const apiKey = process.env.GEMINI_API_KEY;
     if (!apiKey) {
-      // Return a simulated high-quality mock response if key is missing so the app doesn't crash
+      // Fallback Mock Responses
       const mockResponses: Record<string, string> = {
-        "hello": `### Hello! Welcome to your AI Career Guide! \ud83c\udf93
+        "hello": `### Hello! Welcome to your AI Career Guide! 🎓
 
 I am **Edu Carrier AI**, your dedicated counselor. How can I assist you on your educational journey today? 
 Whether you're curious about:
@@ -606,7 +498,7 @@ Whether you're curious about:
 3. **Emerging Careers** (such as AI, Space Science, or Renewable Energy)
 
 Feel free to ask me anything!`,
-        "default": `### Guidance Insight from Edu Carrier AI \u2728
+        "default": `### Guidance Insight from Edu Carrier AI ✨
 
 Based on your question and profile, here is a structured roadmap for your exploration:
 
@@ -624,13 +516,16 @@ Based on your question and profile, here is a structured roadmap for your explor
 
       const norm = message.toLowerCase().trim();
       const reply = norm.includes("hello") || norm.includes("hi") ? mockResponses.hello : mockResponses.default;
-      
-      // Store in memory
+
       if (userId) {
-        if (!store.conversations[userId]) store.conversations[userId] = [];
-        store.conversations[userId].push({ role: "user", text: message, timestamp: new Date().toISOString() });
-        store.conversations[userId].push({ role: "model", text: reply, timestamp: new Date().toISOString() });
-        saveData(store);
+        await runQuery(
+          "INSERT INTO conversations (userId, role, text, timestamp) VALUES (?, ?, ?, ?)",
+          [userId, "user", message, new Date().toISOString()]
+        );
+        await runQuery(
+          "INSERT INTO conversations (userId, role, text, timestamp) VALUES (?, ?, ?, ?)",
+          [userId, "model", reply, new Date().toISOString()]
+        );
       }
 
       return res.json({ text: reply });
@@ -644,29 +539,45 @@ Based on your question and profile, here is a structured roadmap for your explor
       parts: [{ text: msg.text }]
     }));
 
-    const response = await ai.models.generateContent({
-      model: "gemini-3.8-flash",
-      contents: [...formattedHistory, { role: "user", parts: [{ text: message }] }],
-      config: {
-        systemInstruction,
-        temperature: 0.7,
-      }
-    });
+    let response;
+    try {
+      response = await ai.models.generateContent({
+        model: "gemini-3.8-flash",
+        contents: [...formattedHistory, { role: "user", parts: [{ text: message }] }],
+        config: {
+          systemInstruction,
+          temperature: 0.7,
+        }
+      });
+    } catch (primaryErr: any) {
+      console.warn("Primary model gemini-3.8-flash error/overloaded, falling back to gemini-2.5-flash:", primaryErr?.message || primaryErr);
+      response = await ai.models.generateContent({
+        model: "gemini-2.5-flash",
+        contents: [...formattedHistory, { role: "user", parts: [{ text: message }] }],
+        config: {
+          systemInstruction,
+          temperature: 0.7,
+        }
+      });
+    }
 
     const replyText = response.text || "I apologize, I wasn't able to construct a response. Please try asking again.";
 
-    // Store in memory
     if (userId) {
-      if (!store.conversations[userId]) store.conversations[userId] = [];
-      store.conversations[userId].push({ role: "user", text: message, timestamp: new Date().toISOString() });
-      store.conversations[userId].push({ role: "model", text: replyText, timestamp: new Date().toISOString() });
-      saveData(store);
+      await runQuery(
+        "INSERT INTO conversations (userId, role, text, timestamp) VALUES (?, ?, ?, ?)",
+        [userId, "user", message, new Date().toISOString()]
+      );
+      await runQuery(
+        "INSERT INTO conversations (userId, role, text, timestamp) VALUES (?, ?, ?, ?)",
+        [userId, "model", replyText, new Date().toISOString()]
+      );
     }
 
     res.json({ text: replyText });
-  } catch (error: any) {
+  } catch (error) {
     console.error("Gemini API Error:", error);
-    res.status(500).json({ error: "AI service is currently unavailable. Please try again later." });
+    res.status(500).json({ error: "AI service is currently busy or unavailable. Please retry in a moment." });
   }
 });
 
@@ -733,314 +644,369 @@ Rules:
   }
 });
 
-app.get("/api/ai/chat/:userId", (req, res) => {
+app.get("/api/ai/chat/:userId", async (req, res) => {
   const { userId } = req.params;
-  res.json(store.conversations[userId] || []);
+  try {
+    const rows = await getAllRows("SELECT role, text, timestamp FROM conversations WHERE userId = ? ORDER BY id ASC", [userId]);
+    res.json(rows);
+  } catch (error) {
+    console.error("Chat history GET error in SQL:", error);
+    res.status(500).json({ error: "Failed to fetch chat history" });
+  }
 });
 
 // Admin Panel Stats
-app.get("/api/admin/stats", (req, res) => {
-  const totalUsers = Object.keys(store.users).length;
-  const quizAttempts = Object.values(store.quizAttempts).reduce((acc, curr) => acc + curr.length, 0);
-  const totalSaved = Object.values(store.savedCareers).reduce((acc, curr) => acc + curr.length, 0);
-  const aiConversations = Object.values(store.conversations).reduce((acc, curr) => acc + Math.ceil(curr.length / 2), 0);
+app.get("/api/admin/stats", async (req, res) => {
+  try {
+    const totalUsersRow = await getRow("SELECT COUNT(*) as count FROM users");
+    const totalQuizzesRow = await getRow("SELECT COUNT(*) as count FROM quiz_attempts");
+    const totalSavedRow = await getRow("SELECT COUNT(*) as count FROM saved_careers");
+    const totalConversationsRow = await getRow("SELECT COUNT(*) as count FROM conversations");
 
-  res.json({
-    stats: {
-      users: totalUsers,
-      quizzes: quizAttempts,
-      saved: totalSaved,
-      conversations: aiConversations
-    },
-    users: Object.values(store.users).map((u: any) => ({
-      id: u.id,
-      fullName: u.fullName,
-      email: u.email,
-      classLevel: u.classLevel || "Class 10",
-      role: u.role || "student",
-      registeredAt: u.registeredAt || new Date().toISOString()
-    }))
-  });
+    const totalUsers = totalUsersRow ? totalUsersRow.count : 0;
+    const quizAttempts = totalQuizzesRow ? totalQuizzesRow.count : 0;
+    const totalSaved = totalSavedRow ? totalSavedRow.count : 0;
+    const aiConversations = totalConversationsRow ? Math.ceil(totalConversationsRow.count / 2) : 0;
+
+    const userRows = await getAllRows("SELECT id, fullName, email, classLevel, role, registeredAt FROM users");
+
+    res.json({
+      stats: {
+        users: totalUsers,
+        quizzes: quizAttempts,
+        saved: totalSaved,
+        conversations: aiConversations
+      },
+      users: userRows.map((u: any) => ({
+        id: u.id,
+        fullName: u.fullName,
+        email: u.email,
+        classLevel: u.classLevel || "Class 10",
+        role: u.role || "student",
+        registeredAt: u.registeredAt
+      }))
+    });
+  } catch (error) {
+    console.error("Admin stats GET error in SQL:", error);
+    res.status(500).json({ error: "Failed to load admin stats" });
+  }
 });
 
 // GET platform custom data
-app.get("/api/platform/data", (req, res) => {
-  res.json({
-    customCareers: store.customCareers || [],
-    customStreams: store.customStreams || [],
-    customResources: store.customResources || [],
-    customQuizQuestions: store.customQuizQuestions || [],
-    customColleges: store.customColleges || [],
-    customExams: store.customExams || [],
-    customCourses: store.customCourses || [],
-    customSkills: store.customSkills || [],
-    customRoadmaps: store.customRoadmaps || [],
-    customRecommendations: store.customRecommendations || [],
-    aiConfig: store.aiConfig || {}
-  });
+app.get("/api/platform/data", async (req, res) => {
+  try {
+    const rows = await getAllRows("SELECT key, value FROM system_config");
+    const configMap: Record<string, any> = {};
+    rows.forEach((r) => {
+      configMap[r.key] = JSON.parse(r.value);
+    });
+
+    res.json({
+      customCareers: configMap["customCareers"] || [],
+      customStreams: configMap["customStreams"] || [],
+      customResources: configMap["customResources"] || [],
+      customQuizQuestions: configMap["customQuizQuestions"] || [],
+      customColleges: configMap["customColleges"] || [],
+      customExams: configMap["customExams"] || [],
+      customCourses: configMap["customCourses"] || [],
+      customSkills: configMap["customSkills"] || [],
+      customRoadmaps: configMap["customRoadmaps"] || [],
+      customRecommendations: configMap["customRecommendations"] || [],
+      aiConfig: configMap["aiConfig"] || {}
+    });
+  } catch (error) {
+    console.error("Platform data GET error in SQL:", error);
+    res.status(500).json({ error: "Failed to load platform configurations" });
+  }
 });
 
 // POST to update platform custom data
-app.post("/api/platform/save", (req, res) => {
+app.post("/api/platform/save", async (req, res) => {
   const { type, data } = req.body;
   if (!type || !data) {
     return res.status(400).json({ error: "Missing type or data" });
   }
 
-  switch (type) {
-    case "careers":
-      store.customCareers = data;
-      break;
-    case "streams":
-      store.customStreams = data;
-      break;
-    case "resources":
-      store.customResources = data;
-      break;
-    case "quizQuestions":
-      store.customQuizQuestions = data;
-      break;
-    case "colleges":
-      store.customColleges = data;
-      break;
-    case "exams":
-      store.customExams = data;
-      break;
-    case "courses":
-      store.customCourses = data;
-      break;
-    case "skills":
-      store.customSkills = data;
-      break;
-    case "roadmaps":
-      store.customRoadmaps = data;
-      break;
-    case "recommendations":
-      store.customRecommendations = data;
-      break;
-    case "aiConfig":
-      store.aiConfig = data;
-      break;
-    default:
-      return res.status(400).json({ error: "Invalid data type" });
-  }
+  try {
+    let keyName = "";
+    switch (type) {
+      case "careers": keyName = "customCareers"; break;
+      case "streams": keyName = "customStreams"; break;
+      case "resources": keyName = "customResources"; break;
+      case "quizQuestions": keyName = "customQuizQuestions"; break;
+      case "colleges": keyName = "customColleges"; break;
+      case "exams": keyName = "customExams"; break;
+      case "courses": keyName = "customCourses"; break;
+      case "skills": keyName = "customSkills"; break;
+      case "roadmaps": keyName = "customRoadmaps"; break;
+      case "recommendations": keyName = "customRecommendations"; break;
+      case "aiConfig": keyName = "aiConfig"; break;
+      default:
+        return res.status(400).json({ error: "Invalid data type" });
+    }
 
-  saveData(store);
-  res.json({ success: true, message: `${type} updated successfully.` });
+    await runQuery("INSERT OR REPLACE INTO system_config (key, value) VALUES (?, ?)", [keyName, JSON.stringify(data)]);
+    res.json({ success: true, message: `${type} updated successfully.` });
+  } catch (error) {
+    console.error("Platform data save error in SQL:", error);
+    res.status(500).json({ error: "Failed to update platform data" });
+  }
 });
 
 // Admin to delete/update any student
-app.post("/api/admin/students/save", (req, res) => {
+app.post("/api/admin/students/save", async (req, res) => {
   const { studentId, action, data } = req.body;
   if (!studentId) {
     return res.status(400).json({ error: "Missing student ID" });
   }
 
-  const userToModify = Object.values(store.users).find((u: any) => u.id === studentId);
-  if (!userToModify) {
-    return res.status(404).json({ error: "Student not found" });
+  try {
+    const userRow = await getRow("SELECT * FROM users WHERE id = ?", [studentId]);
+    if (!userRow) {
+      return res.status(404).json({ error: "Student not found" });
+    }
+
+    if (action === "delete") {
+      // Due to FOREIGN KEY ON DELETE CASCADE, deleting user deletes bookmarks, quiz attempts, history and notifications automatically!
+      await runQuery("DELETE FROM users WHERE id = ?", [studentId]);
+    } else if (action === "update") {
+      await runQuery(
+        "UPDATE users SET fullName = ?, email = ?, classLevel = ?, role = ? WHERE id = ?",
+        [
+          data.fullName || userRow.fullName,
+          (data.email || userRow.email).toLowerCase(),
+          data.classLevel || userRow.classLevel,
+          data.role || userRow.role,
+          studentId
+        ]
+      );
+    }
+
+    res.json({ success: true, message: `Student account ${action}d successfully.` });
+  } catch (error) {
+    console.error("Admin student save error in SQL:", error);
+    res.status(500).json({ error: "Failed to update student account" });
   }
-
-  const emailKey = userToModify.email.toLowerCase();
-
-  if (action === "delete") {
-    delete store.users[emailKey];
-    delete store.savedCareers[studentId];
-    delete store.quizAttempts[studentId];
-    delete store.conversations[studentId];
-    delete store.notifications[studentId];
-  } else if (action === "update") {
-    store.users[emailKey] = {
-      ...store.users[emailKey],
-      ...data
-    };
-  }
-
-  saveData(store);
-  res.json({ success: true, message: `Student account ${action}d successfully.` });
 });
 
 // Admin to create system-wide notifications
-app.post("/api/admin/notifications/push", (req, res) => {
+app.post("/api/admin/notifications/push", async (req, res) => {
   const { title, body } = req.body;
   if (!title || !body) {
     return res.status(400).json({ error: "Missing title or body" });
   }
 
-  const newNotif = {
-    id: "n-push-" + Date.now(),
-    title,
-    body,
-    timestamp: new Date().toISOString(),
-    read: false
-  };
+  try {
+    const users = await getAllRows("SELECT id FROM users");
+    const timestamp = new Date().toISOString();
 
-  // Push to all users
-  Object.keys(store.users).forEach((email) => {
-    const u = store.users[email];
-    if (u && u.id) {
-      if (!store.notifications[u.id]) {
-        store.notifications[u.id] = [];
-      }
-      store.notifications[u.id].unshift(newNotif);
+    for (const u of users) {
+      await runQuery(
+        "INSERT INTO notifications (id, userId, title, body, timestamp, read) VALUES (?, ?, ?, ?, ?, ?)",
+        [
+          "n-push-" + Date.now() + "-" + Math.random().toString(36).substring(2, 5),
+          u.id,
+          title,
+          body,
+          timestamp,
+          0
+        ]
+      );
     }
-  });
 
-  saveData(store);
-  res.json({ success: true, message: "Notification pushed to all students successfully." });
+    res.json({ success: true, message: "Notification pushed to all students successfully." });
+  } catch (error) {
+    console.error("Notification push error in SQL:", error);
+    res.status(500).json({ error: "Failed to push system notification" });
+  }
 });
 
 // GET all activities
-app.get("/api/activities", (req, res) => {
-  res.json({ activities: store.customActivities || [] });
+app.get("/api/activities", async (req, res) => {
+  try {
+    const rows = await getAllRows("SELECT * FROM custom_activities");
+    res.json({ activities: rows.map(parseActivity) });
+  } catch (error) {
+    console.error("Activities GET error in SQL:", error);
+    res.status(500).json({ error: "Failed to fetch activities" });
+  }
 });
 
 // CREATE or UPDATE activity
-app.post("/api/activities", (req, res) => {
+app.post("/api/activities", async (req, res) => {
   const activity = req.body;
   if (!activity.type || !activity.title) {
     return res.status(400).json({ error: "Missing type or title" });
   }
 
-  if (!store.customActivities) store.customActivities = [];
+  try {
+    const activityId = activity.id || "act-" + Date.now();
+    const existing = activity.id ? await getRow("SELECT * FROM custom_activities WHERE id = ?", [activity.id]) : null;
 
-  let isNew = false;
-  let existingIndex = -1;
+    const completions = activity.completions || (existing ? JSON.parse(existing.completions || "[]") : []);
+    const participants = activity.participants || (existing ? JSON.parse(existing.participants || "[]") : []);
+    const results = activity.results || (existing ? JSON.parse(existing.results || "[]") : []);
 
-  if (activity.id) {
-    existingIndex = store.customActivities.findIndex((a: any) => a.id === activity.id);
-  }
-
-  const savedActivity = {
-    ...activity,
-    id: activity.id || "act-" + Date.now(),
-    createdAt: activity.createdAt || new Date().toISOString(),
-    completions: activity.completions || [],
-    participants: activity.participants || [],
-    results: activity.results || []
-  };
-
-  if (existingIndex > -1) {
-    const existing = store.customActivities[existingIndex];
-    savedActivity.completions = activity.completions || existing.completions || [];
-    savedActivity.participants = activity.participants || existing.participants || [];
-    savedActivity.results = activity.results || existing.results || [];
-    store.customActivities[existingIndex] = savedActivity;
-  } else {
-    isNew = true;
-    store.customActivities.push(savedActivity);
-  }
-
-  // Push notifications if the activity is newly published or update status
-  const statLower = (savedActivity.status || "").toLowerCase();
-  if (statLower === "published" || statLower === "live" || statLower === "active") {
-    const targetClass = savedActivity.targetAudience; // e.g. "Class 11", "Class 12", "All", "Class 11-12"
-    
-    const iconMap: Record<string, string> = {
-      quiz: "📝",
-      news: "📰",
-      task: "🎯",
-      challenge: "🧠",
-      competition: "🏆",
-      learning: "📚",
-      announcement: "📢",
-      event: "🎓"
-    };
-    const icon = iconMap[savedActivity.type] || "✨";
-    const notificationItem = {
-      id: "n-act-" + Date.now(),
-      title: `${icon} New ${savedActivity.type.toUpperCase()}: ${savedActivity.title}`,
-      body: savedActivity.description || `A new educational activity is available for you!`,
-      timestamp: new Date().toISOString(),
-      read: false,
-      activityId: savedActivity.id,
-      activityType: savedActivity.type
+    const savedActivity = {
+      ...activity,
+      id: activityId,
+      createdAt: activity.createdAt || (existing ? existing.createdAt : new Date().toISOString()),
+      completions,
+      participants,
+      results
     };
 
-    Object.keys(store.users).forEach((email) => {
-      const u = store.users[email];
-      if (u && u.id && u.role !== "admin") {
+    await runQuery(
+      `INSERT OR REPLACE INTO custom_activities (id, type, title, description, targetAudience, status, createdAt, completions, participants, results) 
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        savedActivity.id,
+        savedActivity.type,
+        savedActivity.title,
+        savedActivity.description || null,
+        savedActivity.targetAudience || null,
+        savedActivity.status || "draft",
+        savedActivity.createdAt,
+        JSON.stringify(savedActivity.completions),
+        JSON.stringify(savedActivity.participants),
+        JSON.stringify(savedActivity.results)
+      ]
+    );
+
+    // Push notifications if the activity is newly published or update status
+    const statLower = (savedActivity.status || "").toLowerCase();
+    if (statLower === "published" || statLower === "live" || statLower === "active") {
+      const targetClass = savedActivity.targetAudience; // e.g. "Class 11", "Class 12", "All"
+      
+      const iconMap: Record<string, string> = {
+        quiz: "📝",
+        news: "📰",
+        task: "🎯",
+        challenge: "🧠",
+        competition: "🏆",
+        learning: "📚",
+        announcement: "📢",
+        event: "🎓"
+      };
+      const icon = iconMap[savedActivity.type] || "✨";
+      const notificationItem = {
+        id: "n-act-" + Date.now(),
+        title: `${icon} New ${savedActivity.type.toUpperCase()}: ${savedActivity.title}`,
+        body: savedActivity.description || `A new educational activity is available for you!`,
+        timestamp: new Date().toISOString(),
+        read: 0,
+        activityId: savedActivity.id,
+        activityType: savedActivity.type
+      };
+
+      const students = await getAllRows("SELECT id, classLevel FROM users WHERE role != 'admin'");
+      for (const student of students) {
         let isTarget = false;
         if (!targetClass || targetClass === "All") {
           isTarget = true;
         } else if (targetClass.toLowerCase().includes("11-12") || targetClass.toLowerCase().includes("11 - 12")) {
-          isTarget = u.classLevel === "Class 11" || u.classLevel === "Class 12";
+          isTarget = student.classLevel === "Class 11" || student.classLevel === "Class 12";
         } else if (targetClass.toLowerCase().includes("9-10") || targetClass.toLowerCase().includes("9 - 10")) {
-          isTarget = u.classLevel === "Class 9" || u.classLevel === "Class 10";
+          isTarget = student.classLevel === "Class 9" || student.classLevel === "Class 10";
         } else {
-          isTarget = u.classLevel === targetClass;
+          isTarget = student.classLevel === targetClass;
         }
 
         if (isTarget) {
-          if (!store.notifications[u.id]) {
-            store.notifications[u.id] = [];
-          }
-          const hasNotif = store.notifications[u.id].some((n: any) => n.activityId === savedActivity.id);
+          // Check if notification already exists to avoid duplication
+          const hasNotif = await getRow("SELECT 1 FROM notifications WHERE userId = ? AND activityId = ?", [student.id, savedActivity.id]);
           if (!hasNotif) {
-            store.notifications[u.id].unshift(notificationItem);
+            await runQuery(
+              `INSERT INTO notifications (id, userId, title, body, timestamp, read, activityId, activityType) 
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+              [
+                "n-act-" + Date.now() + "-" + Math.random().toString(36).substring(2, 5),
+                student.id,
+                notificationItem.title,
+                notificationItem.body,
+                notificationItem.timestamp,
+                0,
+                notificationItem.activityId,
+                notificationItem.activityType
+              ]
+            );
           }
         }
       }
-    });
-  }
+    }
 
-  saveData(store);
-  res.json({ success: true, activity: savedActivity });
+    res.json({ success: true, activity: savedActivity });
+  } catch (error) {
+    console.error("Activity save error in SQL:", error);
+    res.status(500).json({ error: "Failed to save activity" });
+  }
 });
 
 // DELETE activity
-app.post("/api/activities/delete", (req, res) => {
+app.post("/api/activities/delete", async (req, res) => {
   const { id } = req.body;
   if (!id) return res.status(400).json({ error: "Missing activity ID" });
 
-  if (store.customActivities) {
-    store.customActivities = store.customActivities.filter((a: any) => a.id !== id);
-    saveData(store);
+  try {
+    await runQuery("DELETE FROM custom_activities WHERE id = ?", [id]);
+    res.json({ success: true });
+  } catch (error) {
+    console.error("Activity delete error in SQL:", error);
+    res.status(500).json({ error: "Failed to delete activity" });
   }
-  res.json({ success: true });
 });
 
-// INTERACT with activity (Complete task, quiz submission, register for event)
-app.post("/api/activities/interact", (req, res) => {
+// INTERACT with activity
+app.post("/api/activities/interact", async (req, res) => {
   const { id, activityId, userId, action, data } = req.body;
   const targetId = id || activityId;
   if (!targetId || !userId) return res.status(400).json({ error: "Missing parameters" });
 
-  if (!store.customActivities) store.customActivities = [];
-  const act = store.customActivities.find((a: any) => a.id === targetId);
-  if (!act) return res.status(404).json({ error: "Activity not found" });
+  try {
+    const actRow = await getRow("SELECT * FROM custom_activities WHERE id = ?", [targetId]);
+    if (!actRow) return res.status(404).json({ error: "Activity not found" });
 
-  if (!act.completions) act.completions = [];
-  if (!act.participants) act.participants = [];
-  if (!act.results) act.results = [];
+    const act = parseActivity(actRow);
+    const completions: string[] = act.completions;
+    const participants: string[] = act.participants;
+    const results: any[] = act.results;
 
-  if (action === "register" || action === "start") {
-    if (!act.participants.includes(userId)) {
-      act.participants.push(userId);
-    }
-  } else if (action === "complete") {
-    if (!act.completions.includes(userId)) {
-      act.completions.push(userId);
-    }
-    const finalScore = (data && data.score !== undefined) ? data.score : req.body.score;
-    if (finalScore !== undefined) {
-      const existingResIdx = act.results.findIndex((r: any) => r.userId === userId);
-      const resItem = {
-        userId,
-        score: finalScore,
-        answers: (data && data.answers) || req.body.answers || {},
-        completedAt: new Date().toISOString()
-      };
-      if (existingResIdx > -1) {
-        act.results[existingResIdx] = resItem;
-      } else {
-        act.results.push(resItem);
+    if (action === "register" || action === "start") {
+      if (!participants.includes(userId)) {
+        participants.push(userId);
+      }
+    } else if (action === "complete") {
+      if (!completions.includes(userId)) {
+        completions.push(userId);
+      }
+      const finalScore = (data && data.score !== undefined) ? data.score : req.body.score;
+      if (finalScore !== undefined) {
+        const existingResIdx = results.findIndex((r: any) => r.userId === userId);
+        const resItem = {
+          userId,
+          score: finalScore,
+          answers: (data && data.answers) || req.body.answers || {},
+          completedAt: new Date().toISOString()
+        };
+        if (existingResIdx > -1) {
+          results[existingResIdx] = resItem;
+        } else {
+          results.push(resItem);
+        }
       }
     }
-  }
 
-  saveData(store);
-  res.json({ success: true, activity: act });
+    await runQuery(
+      "UPDATE custom_activities SET completions = ?, participants = ?, results = ? WHERE id = ?",
+      [JSON.stringify(completions), JSON.stringify(participants), JSON.stringify(results), targetId]
+    );
+
+    const updatedActRow = await getRow("SELECT * FROM custom_activities WHERE id = ?", [targetId]);
+    res.json({ success: true, activity: parseActivity(updatedActRow) });
+  } catch (error) {
+    console.error("Activity interact error in SQL:", error);
+    res.status(500).json({ error: "Failed to record activity interaction" });
+  }
 });
 
 
@@ -1048,44 +1014,80 @@ app.post("/api/activities/interact", (req, res) => {
 // Vite and Static File Serving
 // ----------------------------------------------------------------------------
 
-if (process.env.NODE_ENV !== "production") {
-  createViteServer({
-    server: { middlewareMode: true },
-    appType: "spa"
-  }).then((vite) => {
-    app.use(vite.middlewares);
+// Catch unhandled API requests with 404 JSON instead of HTML
+app.all("/api/*", (req, res) => {
+  res.status(404).json({ error: `API route ${req.method} ${req.originalUrl} not found` });
+});
+
+initDb().then(() => {
+  if (process.env.NODE_ENV !== "production") {
+    createViteServer({
+      server: {
+        middlewareMode: true,
+        hmr: false,
+      },
+      appType: "spa"
+    }).then((vite) => {
+      app.use(vite.middlewares);
+      
+      app.use("*", (req, res, next) => {
+        // Exclude API routes
+        if (req.originalUrl.startsWith("/api/")) {
+          return next();
+        }
+        
+        const indexHtmlPath = path.join(process.cwd(), "index.html");
+        fs.readFile(indexHtmlPath, "utf-8", (err, html) => {
+          if (err) return next(err);
+          vite.transformIndexHtml(req.originalUrl, html).then((transformedHtml) => {
+            res.status(200).set({ "Content-Type": "text/html" }).end(transformedHtml);
+          }).catch(next);
+        });
+      });
+      
+      const server = app.listen(PORT, "0.0.0.0", () => {
+        console.log(`Server running in development mode on http://localhost:${PORT}`);
+      });
+
+      server.on("error", (err: any) => {
+        console.error("Server listen error:", err);
+      });
+
+      const handleShutdown = () => {
+        server.close(() => {
+          process.exit(0);
+        });
+      };
+      process.on("SIGTERM", handleShutdown);
+      process.on("SIGINT", handleShutdown);
+    });
+  } else {
+    const distPath = path.join(process.cwd(), "dist");
+    app.use(express.static(distPath));
     
-    app.use("*", (req, res, next) => {
-      // Exclude API routes
+    app.get("*", (req, res, next) => {
       if (req.originalUrl.startsWith("/api/")) {
         return next();
       }
-      
-      const indexHtmlPath = path.join(process.cwd(), "index.html");
-      fs.readFile(indexHtmlPath, "utf-8", (err, html) => {
-        if (err) return next(err);
-        vite.transformIndexHtml(req.originalUrl, html).then((transformedHtml) => {
-          res.status(200).set({ "Content-Type": "text/html" }).end(transformedHtml);
-        }).catch(next);
-      });
+      res.sendFile(path.join(distPath, "index.html"));
     });
     
-    app.listen(PORT, "0.0.0.0", () => {
-      console.log(`Server running in development mode on http://localhost:${PORT}`);
+    const server = app.listen(PORT, "0.0.0.0", () => {
+      console.log(`Server running in production mode on port ${PORT}`);
     });
-  });
-} else {
-  const distPath = path.join(process.cwd(), "dist");
-  app.use(express.static(distPath));
-  
-  app.get("*", (req, res, next) => {
-    if (req.originalUrl.startsWith("/api/")) {
-      return next();
-    }
-    res.sendFile(path.join(distPath, "index.html"));
-  });
-  
-  app.listen(PORT, "0.0.0.0", () => {
-    console.log(`Server running in production mode on port ${PORT}`);
-  });
-}
+
+    server.on("error", (err: any) => {
+      console.error("Server listen error:", err);
+    });
+
+    const handleShutdown = () => {
+      server.close(() => {
+        process.exit(0);
+      });
+    };
+    process.on("SIGTERM", handleShutdown);
+    process.on("SIGINT", handleShutdown);
+  }
+}).catch((err) => {
+  console.error("CRITICAL: Failed to initialize SQLite relational database. Server startup aborted.", err);
+});
