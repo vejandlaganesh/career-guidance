@@ -26,7 +26,7 @@ import {
   requireAuth,
   requireAdmin,
   requireSelfOrAdmin,
-  AuthenticatedRequest
+  type AuthenticatedRequest
 } from "./src/middleware/auth.ts";
 
 dotenv.config();
