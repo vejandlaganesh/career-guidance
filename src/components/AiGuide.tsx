@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from "react";
 import { User, Message } from "../types";
 import { Sparkles, Send, Bot, User as UserIcon, RefreshCw, Loader2, ArrowRight } from "lucide-react";
+import { authFetch } from "../utils/api";
 
 interface AiGuideProps {
   user: User | null;
@@ -57,7 +58,7 @@ I can help you explore streams, design custom learning roadmaps, evaluate entran
     setLoading(true);
 
     try {
-      const res = await fetch("/api/ai/chat", {
+      const res = await authFetch("/api/ai/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({

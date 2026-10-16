@@ -86,9 +86,19 @@ export async function initDb(): Promise<void> {
       preferredSubjects TEXT NOT NULL, -- JSON string
       careerInterests TEXT NOT NULL, -- JSON string
       role TEXT NOT NULL DEFAULT 'student',
-      registeredAt TEXT NOT NULL
+      registeredAt TEXT NOT NULL,
+      resetToken TEXT,
+      resetTokenExpiry TEXT
     )
   `);
+
+  // Safe non-destructive column additions for existing databases
+  try {
+    await runQuery("ALTER TABLE users ADD COLUMN resetToken TEXT;");
+  } catch (e) {}
+  try {
+    await runQuery("ALTER TABLE users ADD COLUMN resetTokenExpiry TEXT;");
+  } catch (e) {}
 
   // Create saved_careers table
   await runQuery(`
@@ -316,48 +326,65 @@ export async function initDb(): Promise<void> {
       console.error("Failed to migrate data from JSON file into SQLite database:", err);
     }
   } else {
-    // Seed system config defaults if completely empty
-    const adminCheck = await getRow<{ count: number }>("SELECT COUNT(*) as count FROM users WHERE role = 'admin'");
-    if (!adminCheck || adminCheck.count === 0) {
-      console.log("No admin user found. Seeding default system profiles into SQLite...");
-      
-      // Admin
-      await runQuery(
-        `INSERT OR IGNORE INTO users (id, fullName, email, passwordHash, classLevel, interests, skills, preferredSubjects, careerInterests, role, registeredAt) 
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        [
-          "admin-user",
-          "System Admin",
-          "admin@educarrier.com",
-          "admin123",
-          "Class 12",
-          JSON.stringify([]),
-          JSON.stringify([]),
-          JSON.stringify([]),
-          JSON.stringify([]),
-          "admin",
-          new Date().toISOString()
-        ]
-      );
+  // Safe migration of existing plain passwords to bcrypt hashes
+  try {
+    const existingUsers = await getAllRows<{ id: string; passwordHash: string }>("SELECT id, passwordHash FROM users");
+    const bcrypt = await import("bcryptjs");
+    for (const u of existingUsers) {
+      if (u.passwordHash && !u.passwordHash.startsWith("$2a$") && !u.passwordHash.startsWith("$2b$") && !u.passwordHash.startsWith("$2y$")) {
+        const hashed = await bcrypt.default.hash(u.passwordHash, 10);
+        await runQuery("UPDATE users SET passwordHash = ? WHERE id = ?", [hashed, u.id]);
+      }
+    }
+  } catch (e) {
+    console.warn("Password hash migration note:", e);
+  }
 
-      // Demo User
-      await runQuery(
-        `INSERT OR IGNORE INTO users (id, fullName, email, passwordHash, classLevel, interests, skills, preferredSubjects, careerInterests, role, registeredAt) 
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        [
-          "demo-user",
-          "Rahul Sharma",
-          "demo@educarrier.com",
-          "demo123",
-          "Class 11",
-          JSON.stringify(["Coding", "Analytics", "Space", "Science"]),
-          JSON.stringify(["Python basics", "Mathematics", "Logical reasoning"]),
-          JSON.stringify(["Mathematics", "Physics", "Computer Science"]),
-          JSON.stringify(["AI Engineer", "Software Engineer"]),
-          "student",
-          new Date().toISOString()
-        ]
-      );
+  // Seed system config defaults if completely empty
+  const adminCheck = await getRow<{ count: number }>("SELECT COUNT(*) as count FROM users WHERE role = 'admin'");
+  if (!adminCheck || adminCheck.count === 0) {
+    console.log("No admin user found. Seeding default system profiles into SQLite...");
+    const bcrypt = await import("bcryptjs");
+    const adminHashed = await bcrypt.default.hash("admin123", 10);
+    const demoHashed = await bcrypt.default.hash("demo123", 10);
+    
+    // Admin
+    await runQuery(
+      `INSERT OR IGNORE INTO users (id, fullName, email, passwordHash, classLevel, interests, skills, preferredSubjects, careerInterests, role, registeredAt) 
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        "admin-user",
+        "System Admin",
+        "admin@educarrier.com",
+        adminHashed,
+        "Class 12",
+        JSON.stringify([]),
+        JSON.stringify([]),
+        JSON.stringify([]),
+        JSON.stringify([]),
+        "admin",
+        new Date().toISOString()
+      ]
+    );
+
+    // Demo User
+    await runQuery(
+      `INSERT OR IGNORE INTO users (id, fullName, email, passwordHash, classLevel, interests, skills, preferredSubjects, careerInterests, role, registeredAt) 
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        "demo-user",
+        "Rahul Sharma",
+        "demo@educarrier.com",
+        demoHashed,
+        "Class 11",
+        JSON.stringify(["Coding", "Analytics", "Space", "Science"]),
+        JSON.stringify(["Python basics", "Mathematics", "Logical reasoning"]),
+        JSON.stringify(["Mathematics", "Physics", "Computer Science"]),
+        JSON.stringify(["AI Engineer", "Software Engineer"]),
+        "student",
+        new Date().toISOString()
+      ]
+    );
 
       // Demo saved careers
       await runQuery("INSERT OR IGNORE INTO saved_careers (userId, careerId) VALUES (?, ?)", ["demo-user", "ai-engineer"]);

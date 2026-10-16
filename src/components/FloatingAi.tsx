@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from "react";
 import { User, Message } from "../types";
 import { Sparkles, Send, Bot, X, Loader2, MessageSquare, CornerDownLeft, RefreshCw } from "lucide-react";
+import { authFetch } from "../utils/api";
 
 interface FloatingAiProps {
   user: User | null;
@@ -54,7 +55,7 @@ Ask me any quick questions about:
     setLoading(true);
 
     try {
-      const res = await fetch("/api/ai/chat", {
+      const res = await authFetch("/api/ai/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({

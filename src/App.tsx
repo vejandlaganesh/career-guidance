@@ -21,6 +21,7 @@ import { User, Notification } from "./types";
 import { getCareer, allCareers, CATEGORY_LABELS, CompiledCareer, updateDynamicData } from "./data";
 import { updateResources } from "./components/Resources";
 import { updateQuizQuestions } from "./components/CareerQuiz";
+import { authFetch } from "./utils/api";
 
 export default function App() {
   const [user, setUser] = useState<User | null>(null);
@@ -97,7 +98,7 @@ export default function App() {
     if (!userId) return;
     try {
       // Fetch saved career bookmarks
-      const bRes = await fetch(`/api/bookmarks/${userId}`);
+      const bRes = await authFetch(`/api/bookmarks/${userId}`);
       const bType = bRes.headers.get("content-type");
       if (bRes.ok && bType && bType.includes("application/json")) {
         const bData = await bRes.json();
@@ -105,7 +106,7 @@ export default function App() {
       }
 
       // Fetch student notification list
-      const nRes = await fetch(`/api/notifications/${userId}`);
+      const nRes = await authFetch(`/api/notifications/${userId}`);
       const nType = nRes.headers.get("content-type");
       if (nRes.ok && nType && nType.includes("application/json")) {
         const nData = await nRes.json();
@@ -171,7 +172,7 @@ export default function App() {
     });
 
     try {
-      const res = await fetch("/api/activities/interact", {
+      const res = await authFetch("/api/activities/interact", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -196,7 +197,7 @@ export default function App() {
   const handleCompleteOtherActivity = async (activityId: string, type: string) => {
     if (!user) return;
     try {
-      const res = await fetch("/api/activities/interact", {
+      const res = await authFetch("/api/activities/interact", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -218,7 +219,7 @@ export default function App() {
   const handleRegisterForEvent = async (activityId: string) => {
     if (!user) return;
     try {
-      const res = await fetch("/api/activities/interact", {
+      const res = await authFetch("/api/activities/interact", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -240,7 +241,7 @@ export default function App() {
   const handleLoginSuccess = (loggedInUser: User) => {
     setUser(loggedInUser);
     localStorage.setItem("newedu_user", JSON.stringify(loggedInUser));
-    const isAdminUser = loggedInUser.role === "admin" || loggedInUser.email === "admin@educarrier.com" || loggedInUser.email === "admin@example.com";
+    const isAdminUser = loggedInUser.role === "admin";
     setActiveTab(isAdminUser ? "admin" : "dashboard");
     loadUserData(loggedInUser.id);
   };
@@ -256,6 +257,9 @@ export default function App() {
       });
       const data = await res.json();
       if (res.ok && data.user) {
+        if (data.token) {
+          localStorage.setItem("newedu_token", data.token);
+        }
         handleLoginSuccess(data.user);
         if (targetTab) {
           setActiveTab(targetTab);
@@ -269,12 +273,16 @@ export default function App() {
     }
   };
 
-  const handleLogout = () => {
+  const handleLogout = async () => {
+    try {
+      await authFetch("/api/auth/logout", { method: "POST" });
+    } catch (e) {}
     setUser(null);
     setSavedCareers([]);
     setNotifications([]);
     setCompareList([]);
     localStorage.removeItem("newedu_user");
+    localStorage.removeItem("newedu_token");
     setActiveTab("home");
   };
 
@@ -292,7 +300,7 @@ export default function App() {
     setSavedCareers(updated);
 
     try {
-      await fetch("/api/bookmarks/toggle", {
+      await authFetch("/api/bookmarks/toggle", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ userId: user.id, careerId: id })
@@ -308,7 +316,7 @@ export default function App() {
   const handleMarkNotificationsRead = async () => {
     if (!user) return;
     try {
-      await fetch(`/api/notifications/read/${user.id}`, { method: "POST" });
+      await authFetch(`/api/notifications/read/${user.id}`, { method: "POST" });
       setNotifications((prev) => prev.map((n) => ({ ...n, read: true })));
     } catch (e) {}
   };
@@ -317,7 +325,7 @@ export default function App() {
   const handleDeleteNotification = async (notificationId: string) => {
     if (!user) return;
     try {
-      await fetch(`/api/notifications/${user.id}/${notificationId}`, { method: "DELETE" });
+      await authFetch(`/api/notifications/${user.id}/${notificationId}`, { method: "DELETE" });
       setNotifications((prev) => prev.filter((n) => n.id !== notificationId));
     } catch (e) {
       console.error(e);

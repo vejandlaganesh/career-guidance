@@ -7,6 +7,7 @@ import {
 import { allCareers, STREAMS, CompiledCareer } from "../data";
 import { RESOURCES_DATABASE } from "./Resources";
 import { QUIZ_QUESTIONS } from "./CareerQuiz";
+import { authFetch } from "../utils/api";
 
 interface AdminPanelProps {
   onRefreshData?: () => void;
@@ -130,7 +131,7 @@ export default function AdminPanel({ onRefreshData, activeSubTab: externalActive
     setLoading(true);
     try {
       // 1. Load general stats and student directory
-      const statsRes = await fetch("/api/admin/stats");
+      const statsRes = await authFetch("/api/admin/stats");
       if (statsRes.ok && statsRes.headers.get("content-type")?.includes("application/json")) {
         const statsData = await statsRes.json();
         setStats(statsData.stats);
@@ -138,7 +139,7 @@ export default function AdminPanel({ onRefreshData, activeSubTab: externalActive
       }
 
       // 2. Load custom platform configurations
-      const platRes = await fetch("/api/platform/data");
+      const platRes = await authFetch("/api/platform/data");
       if (platRes.ok && platRes.headers.get("content-type")?.includes("application/json")) {
         const platData = await platRes.json();
         setPlatformData(platData);
@@ -148,7 +149,7 @@ export default function AdminPanel({ onRefreshData, activeSubTab: externalActive
       }
 
       // 3. Load activities list
-      const actRes = await fetch("/api/activities");
+      const actRes = await authFetch("/api/activities");
       if (actRes.ok && actRes.headers.get("content-type")?.includes("application/json")) {
         const actData = await actRes.json();
         setAdminActivities(actData.activities || []);
@@ -210,7 +211,7 @@ export default function AdminPanel({ onRefreshData, activeSubTab: externalActive
     }
 
     try {
-      const res = await fetch("/api/activities", {
+      const res = await authFetch("/api/activities", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload)
@@ -238,7 +239,7 @@ export default function AdminPanel({ onRefreshData, activeSubTab: externalActive
   const handleDeleteActivity = async (id: string) => {
     if (!confirm("Are you sure you want to delete this activity?")) return;
     try {
-      const res = await fetch("/api/activities/delete", {
+      const res = await authFetch("/api/activities/delete", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ id })
@@ -265,7 +266,7 @@ export default function AdminPanel({ onRefreshData, activeSubTab: externalActive
       results: []
     };
     try {
-      const res = await fetch("/api/activities", {
+      const res = await authFetch("/api/activities", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(duplicated)
@@ -287,7 +288,7 @@ export default function AdminPanel({ onRefreshData, activeSubTab: externalActive
       status: nextStatus
     };
     try {
-      const res = await fetch("/api/activities", {
+      const res = await authFetch("/api/activities", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(updated)
@@ -338,7 +339,7 @@ export default function AdminPanel({ onRefreshData, activeSubTab: externalActive
     e.preventDefault();
     if (!notifTitle || !notifBody) return;
     try {
-      const res = await fetch("/api/admin/notifications/push", {
+      const res = await authFetch("/api/admin/notifications/push", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ title: notifTitle, body: notifBody })
@@ -422,7 +423,7 @@ export default function AdminPanel({ onRefreshData, activeSubTab: externalActive
     setIsGeneratingQuizQuestion(true);
     setAlertMessage(null);
     try {
-      const res = await fetch("/api/ai/generate-quiz", {
+      const res = await authFetch("/api/ai/generate-quiz", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ topic: aiQuizPrompt })
@@ -450,7 +451,7 @@ export default function AdminPanel({ onRefreshData, activeSubTab: externalActive
 
   const handleSaveAiConfig = async () => {
     try {
-      const res = await fetch("/api/platform/save", {
+      const res = await authFetch("/api/platform/save", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -470,7 +471,7 @@ export default function AdminPanel({ onRefreshData, activeSubTab: externalActive
 
   const handleDeleteStudent = async (studentId: string) => {
     try {
-      const res = await fetch("/api/admin/students/save", {
+      const res = await authFetch("/api/admin/students/save", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ studentId, action: "delete" })
@@ -489,7 +490,7 @@ export default function AdminPanel({ onRefreshData, activeSubTab: externalActive
   // Generic Save to platformData arrays
   const savePlatformCollection = async (type: string, updatedList: any[]) => {
     try {
-      const res = await fetch("/api/platform/save", {
+      const res = await authFetch("/api/platform/save", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ type, data: updatedList })
@@ -1856,7 +1857,7 @@ export default function AdminPanel({ onRefreshData, activeSubTab: externalActive
                             <button
                               onClick={async () => {
                                 try {
-                                  const res = await fetch("/api/admin/students/save", {
+                                  const res = await authFetch("/api/admin/students/save", {
                                     method: "POST",
                                     headers: { "Content-Type": "application/json" },
                                     body: JSON.stringify({ studentId: st.id, action: "update", data: selectedItem })

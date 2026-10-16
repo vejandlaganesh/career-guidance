@@ -1,6 +1,7 @@
 import React, { useState } from "react";
 import { User } from "../types";
 import { User as UserIcon, BookOpen, Key, CheckSquare, Sparkles, AlertCircle, Award } from "lucide-react";
+import { authFetch } from "../utils/api";
 
 interface ProfileProps {
   user: User;
@@ -79,7 +80,7 @@ export default function Profile({ user, savedCareersCount, onProfileUpdated }: P
     }
 
     try {
-      const res = await fetch(`/api/profile/${user.id}`, {
+      const res = await authFetch(`/api/profile/${user.id}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ fullName, classLevel, skills, preferredSubjects, password })

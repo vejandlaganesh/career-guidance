@@ -46,6 +46,9 @@ export default function Home({ onNavigate, onOpenAuth, onDemoLogin }: HomeProps)
         });
         const data = await res.json();
         if (res.ok && data.user) {
+          if (data.token) {
+            localStorage.setItem("newedu_token", data.token);
+          }
           localStorage.setItem("newedu_user", JSON.stringify(data.user));
           window.location.reload();
         } else {

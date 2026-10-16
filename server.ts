@@ -1,6 +1,7 @@
 import express from "express";
 import path from "path";
 import fs from "fs";
+import cookieParser from "cookie-parser";
 import { createServer as createViteServer } from "vite";
 import { GoogleGenAI } from "@google/genai";
 import dotenv from "dotenv";
@@ -8,8 +9,25 @@ import {
   initDb,
   runQuery,
   getRow,
-  getAllRows
+  getAllRows,
+  getDb
 } from "./src/db/sqlite.ts";
+import {
+  hashPassword,
+  verifyPassword,
+  validatePasswordPolicy,
+  validateEmailFormat,
+  sanitizeUser,
+  signAuthToken,
+  generatePasswordResetToken,
+  hashResetToken
+} from "./src/utils/auth.ts";
+import {
+  requireAuth,
+  requireAdmin,
+  requireSelfOrAdmin,
+  AuthenticatedRequest
+} from "./src/middleware/auth.ts";
 
 dotenv.config();
 
@@ -19,7 +37,18 @@ const argPort = portArgIndex !== -1 && process.argv[portArgIndex + 1] ? parseInt
 // Dev server must run on port 3000 in development; use process.env.PORT in production
 const PORT = argPort || (process.env.NODE_ENV === "production" ? Number(process.env.PORT) || 3000 : 3000);
 
-app.use(express.json());
+// Basic Security & Parsing Middleware
+app.use(express.json({ limit: "2mb" }));
+app.use(cookieParser());
+
+// Security Headers Middleware
+app.use((req, res, next) => {
+  res.setHeader("X-Content-Type-Options", "nosniff");
+  res.setHeader("X-Frame-Options", "DENY");
+  res.setHeader("X-XSS-Protection", "1; mode=block");
+  res.setHeader("Referrer-Policy", "strict-origin-when-cross-origin");
+  next();
+});
 
 // Lazy initialization of GoogleGenAI Client
 let genAIClient: GoogleGenAI | null = null;
@@ -46,13 +75,13 @@ function getGenAI(): GoogleGenAI {
 // ----------------------------------------------------------------------------
 function parseUser(row: any) {
   if (!row) return null;
-  return {
+  return sanitizeUser({
     ...row,
     interests: JSON.parse(row.interests || "[]"),
     skills: JSON.parse(row.skills || "[]"),
     preferredSubjects: JSON.parse(row.preferredSubjects || "[]"),
     careerInterests: JSON.parse(row.careerInterests || "[]"),
-  };
+  });
 }
 
 function parseQuizAttempt(row: any) {
@@ -74,69 +103,94 @@ function parseActivity(row: any) {
   };
 }
 
+// Helper: Set secure auth cookie
+function setAuthCookie(res: express.Response, token: string) {
+  res.cookie("auth_token", token, {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === "production",
+    sameSite: "lax",
+    maxAge: 7 * 24 * 60 * 60 * 1000 // 7 days
+  });
+}
+
 // ----------------------------------------------------------------------------
-// API Endpoints
+// Authentication Endpoints
 // ----------------------------------------------------------------------------
 
-// Auth Endpoints
+// Registration Endpoint - Enforces safe role, password hashing, and unique notification ID in transaction
 app.post("/api/auth/register", async (req, res) => {
   const { fullName, email, password, classLevel } = req.body;
   if (!fullName || !email || !password || !classLevel) {
     return res.status(400).json({ error: "All fields are required" });
   }
 
+  const cleanName = String(fullName).trim();
+  const cleanEmail = String(email).toLowerCase().trim();
+
+  if (!validateEmailFormat(cleanEmail)) {
+    return res.status(400).json({ error: "Invalid email address format" });
+  }
+
+  const passCheck = validatePasswordPolicy(password);
+  if (!passCheck.valid) {
+    return res.status(400).json({ error: passCheck.message });
+  }
+
   try {
-    const emailLower = email.toLowerCase().trim();
-    const existing = await getRow("SELECT id FROM users WHERE LOWER(email) = LOWER(?)", [emailLower]);
+    const existing = await getRow("SELECT id FROM users WHERE LOWER(email) = LOWER(?)", [cleanEmail]);
     if (existing) {
-      return res.status(400).json({ error: "Email is already registered" });
+      return res.status(400).json({ error: "An account with this email is already registered" });
     }
 
-    const isAdminEmail = emailLower.endsWith("@educarrier.com") || 
-                         emailLower.endsWith("@educarrer.com") || 
-                         emailLower.endsWith("@admin.com");
-    const assignedRole = isAdminEmail ? "admin" : "student";
-
+    // SECURITY: Public registration CANNOT self-escalate to admin role
+    const assignedRole = "student";
     const userId = "u-" + Math.random().toString(36).substring(2, 11);
-    
-    // SQL relational write
-    await runQuery(
-      `INSERT INTO users (id, fullName, email, passwordHash, classLevel, interests, skills, preferredSubjects, careerInterests, role, registeredAt) 
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [
+    const passwordHashed = await hashPassword(password);
+    const registeredAt = new Date().toISOString();
+
+    // Use SQLite transaction for atomicity (prevents partial user without notification or vice versa)
+    const db = getDb();
+    const runInTransaction = db.transaction(() => {
+      // 1. Insert user with hashed password
+      db.prepare(`
+        INSERT INTO users (id, fullName, email, passwordHash, classLevel, interests, skills, preferredSubjects, careerInterests, role, registeredAt) 
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
         userId,
-        fullName,
-        emailLower,
-        password,
-        classLevel,
+        cleanName,
+        cleanEmail,
+        passwordHashed,
+        String(classLevel),
         JSON.stringify([]),
         JSON.stringify([]),
         JSON.stringify([]),
         JSON.stringify([]),
         assignedRole,
-        new Date().toISOString()
-      ]
-    );
+        registeredAt
+      );
 
-    // SQL notification insert
-    await runQuery(
-      "INSERT INTO notifications (id, userId, title, body, timestamp, read) VALUES (?, ?, ?, ?, ?, ?)",
-      [
-        "n-reg",
+      // 2. Insert registration welcome notification with a UNIQUE ID (fixes n-reg collision defect)
+      const uniqueNotificationId = `n-reg-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
+      db.prepare(`
+        INSERT INTO notifications (id, userId, title, body, timestamp, read) 
+        VALUES (?, ?, ?, ?, ?, ?)
+      `).run(
+        uniqueNotificationId,
         userId,
         "Account Created Successfully! ✨",
-        "Welcome aboard, " + fullName + "! Start exploring Streams or Career details.",
-        new Date().toISOString(),
+        "Welcome aboard, " + cleanName + "! Start exploring Streams or Career details.",
+        registeredAt,
         0
-      ]
-    );
+      );
+    });
 
-    const newUser = {
+    runInTransaction();
+
+    const userPayload = {
       id: userId,
-      fullName,
-      email: emailLower,
-      passwordHash: password,
-      classLevel,
+      fullName: cleanName,
+      email: cleanEmail,
+      classLevel: String(classLevel),
       interests: [],
       skills: [],
       preferredSubjects: [],
@@ -144,13 +198,21 @@ app.post("/api/auth/register", async (req, res) => {
       role: assignedRole
     };
 
-    res.json({ message: "Registration successful", user: newUser });
+    const token = signAuthToken({ id: userId, email: cleanEmail, role: assignedRole });
+    setAuthCookie(res, token);
+
+    res.status(201).json({
+      message: "Registration successful",
+      user: userPayload,
+      token
+    });
   } catch (error) {
     console.error("Registration error in SQL:", error);
     res.status(500).json({ error: "Failed to complete registration" });
   }
 });
 
+// Login Endpoint - Safe password verification & JWT token generation
 app.post("/api/auth/login", async (req, res) => {
   const { email, password } = req.body;
   if (!email || !password) {
@@ -158,59 +220,162 @@ app.post("/api/auth/login", async (req, res) => {
   }
 
   try {
-    const userRow = await getRow("SELECT * FROM users WHERE LOWER(email) = LOWER(?)", [email.toLowerCase().trim()]);
-    if (!userRow || userRow.passwordHash !== password) {
+    const cleanEmail = String(email).toLowerCase().trim();
+    const userRow = await getRow("SELECT * FROM users WHERE LOWER(email) = LOWER(?)", [cleanEmail]);
+    if (!userRow) {
       return res.status(401).json({ error: "Invalid email or password" });
     }
 
-    res.json({ message: "Login successful", user: parseUser(userRow) });
+    const isValid = await verifyPassword(password, userRow.passwordHash);
+    if (!isValid) {
+      return res.status(401).json({ error: "Invalid email or password" });
+    }
+
+    // Migrate plain-text password to bcrypt on successful login if not hashed yet
+    if (!userRow.passwordHash.startsWith("$2a$") && !userRow.passwordHash.startsWith("$2b$") && !userRow.passwordHash.startsWith("$2y$")) {
+      const newHash = await hashPassword(password);
+      await runQuery("UPDATE users SET passwordHash = ? WHERE id = ?", [newHash, userRow.id]);
+    }
+
+    const safeUser = parseUser(userRow);
+    const token = signAuthToken({ id: safeUser.id, email: safeUser.email, role: safeUser.role || "student" });
+    setAuthCookie(res, token);
+
+    res.json({
+      message: "Login successful",
+      user: safeUser,
+      token
+    });
   } catch (error) {
     console.error("Login error in SQL:", error);
     res.status(500).json({ error: "Failed to execute login" });
   }
 });
 
+// Logout Endpoint - Clears auth cookie
+app.post("/api/auth/logout", (req, res) => {
+  res.clearCookie("auth_token", {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === "production",
+    sameSite: "lax"
+  });
+  res.json({ message: "Logged out successfully" });
+});
+
+// Get Current Logged-in User via session token
+app.get("/api/auth/me", requireAuth, async (req: AuthenticatedRequest, res) => {
+  try {
+    const userRow = await getRow("SELECT * FROM users WHERE id = ?", [req.user!.id]);
+    if (!userRow) {
+      return res.status(404).json({ error: "User not found" });
+    }
+    res.json({ user: parseUser(userRow) });
+  } catch (error) {
+    res.status(500).json({ error: "Failed to retrieve user session" });
+  }
+});
+
+// Request Password Reset Token (Secure time-limited single-use token)
+app.post("/api/auth/forgot-password", async (req, res) => {
+  const { email } = req.body;
+  if (!email) {
+    return res.status(400).json({ error: "Email address is required" });
+  }
+
+  const cleanEmail = String(email).toLowerCase().trim();
+  try {
+    const userRow = await getRow("SELECT * FROM users WHERE LOWER(email) = LOWER(?)", [cleanEmail]);
+    
+    // Always return safe consistent response to prevent email enumeration
+    if (!userRow) {
+      return res.json({
+        message: "If that email is registered, instructions to reset your password have been generated.",
+        resetToken: process.env.NODE_ENV !== "production" ? undefined : undefined
+      });
+    }
+
+    const { rawToken, hashedToken, expiry } = generatePasswordResetToken();
+    await runQuery("UPDATE users SET resetToken = ?, resetTokenExpiry = ? WHERE id = ?", [hashedToken, expiry, userRow.id]);
+
+    // In development mode, provide raw token so user/testing can proceed seamlessly without SMTP server
+    const isDev = process.env.NODE_ENV !== "production";
+    res.json({
+      message: "If that email is registered, instructions to reset your password have been generated.",
+      resetToken: isDev ? rawToken : undefined
+    });
+  } catch (error) {
+    console.error("Forgot password error:", error);
+    res.status(500).json({ error: "Failed to process password reset request" });
+  }
+});
+
+// Confirm and Execute Password Reset using Token
 app.post("/api/auth/reset-password", async (req, res) => {
-  const { email, newPassword } = req.body;
+  const { email, token, newPassword } = req.body;
   if (!email || !newPassword) {
     return res.status(400).json({ error: "Email and new password are required" });
   }
 
-  if (typeof newPassword !== "string" || newPassword.length < 6) {
-    return res.status(400).json({ error: "Password must be at least 6 characters" });
+  const passCheck = validatePasswordPolicy(newPassword);
+  if (!passCheck.valid) {
+    return res.status(400).json({ error: passCheck.message });
   }
 
+  const cleanEmail = String(email).toLowerCase().trim();
   try {
-    const emailLower = email.toLowerCase().trim();
-    const userRow = await getRow("SELECT * FROM users WHERE LOWER(email) = LOWER(?)", [emailLower]);
+    const userRow = await getRow("SELECT * FROM users WHERE LOWER(email) = LOWER(?)", [cleanEmail]);
     if (!userRow) {
-      return res.status(404).json({ error: "No account registered with this email address" });
+      return res.status(400).json({ error: "Invalid password reset request" });
     }
 
-    await runQuery("UPDATE users SET passwordHash = ? WHERE id = ?", [newPassword, userRow.id]);
+    // Require token verification if token is present or registered
+    if (token) {
+      const hashedProvided = hashResetToken(String(token).trim());
+      if (userRow.resetToken !== hashedProvided) {
+        return res.status(400).json({ error: "Invalid or expired password reset token" });
+      }
 
-    // Insert notification
+      if (!userRow.resetTokenExpiry || new Date(userRow.resetTokenExpiry) < new Date()) {
+        return res.status(400).json({ error: "Password reset token has expired. Please request a new one." });
+      }
+    } else {
+      // If no token was supplied, require that the account doesn't have an active protected resetToken requirement
+      // For testing and fallback safety, if token is omitted we reject to prevent unauthenticated arbitrary reset
+      return res.status(400).json({ error: "Password reset token is required to reset your password." });
+    }
+
+    // Hash the new password with bcrypt and invalidate the used token
+    const newHashed = await hashPassword(newPassword);
+    await runQuery(
+      "UPDATE users SET passwordHash = ?, resetToken = NULL, resetTokenExpiry = NULL WHERE id = ?",
+      [newHashed, userRow.id]
+    );
+
+    // Insert security notification
+    const notifId = `n-pwd-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`;
     await runQuery(
       "INSERT INTO notifications (id, userId, title, body, timestamp, read) VALUES (?, ?, ?, ?, ?, ?)",
       [
-        "n-" + Math.random().toString(36).substring(2, 10),
+        notifId,
         userRow.id,
         "Password Reset Successful 🔐",
-        "Your account password was updated successfully. If this wasn't you, please contact support.",
+        "Your account password was updated successfully. If this wasn't you, please contact support immediately.",
         new Date().toISOString(),
         0
       ]
     );
 
-    res.json({ message: "Password updated successfully" });
+    res.json({ message: "Password updated successfully. You can now log in." });
   } catch (error) {
     console.error("Password reset error in SQL:", error);
     res.status(500).json({ error: "Failed to reset password" });
   }
 });
 
-// Profile Endpoints
-app.get("/api/profile/:userId", async (req, res) => {
+// ----------------------------------------------------------------------------
+// Profile Endpoints (Protected: Owner or Admin only)
+// ----------------------------------------------------------------------------
+app.get("/api/profile/:userId", requireSelfOrAdmin("userId"), async (req, res) => {
   const { userId } = req.params;
   try {
     const userRow = await getRow("SELECT * FROM users WHERE id = ?", [userId]);
@@ -224,7 +389,7 @@ app.get("/api/profile/:userId", async (req, res) => {
   }
 });
 
-app.put("/api/profile/:userId", async (req, res) => {
+app.put("/api/profile/:userId", requireSelfOrAdmin("userId"), async (req, res) => {
   const { userId } = req.params;
   try {
     const userRow = await getRow("SELECT * FROM users WHERE id = ?", [userId]);
@@ -234,22 +399,32 @@ app.put("/api/profile/:userId", async (req, res) => {
 
     const fullName = req.body.fullName || userRow.fullName;
     const classLevel = req.body.classLevel || userRow.classLevel;
-    const interests = req.body.interests || JSON.parse(userRow.interests || "[]");
-    const skills = req.body.skills || JSON.parse(userRow.skills || "[]");
-    const preferredSubjects = req.body.preferredSubjects || JSON.parse(userRow.preferredSubjects || "[]");
-    const careerInterests = req.body.careerInterests || JSON.parse(userRow.careerInterests || "[]");
+    const interests = req.body.interests !== undefined ? req.body.interests : JSON.parse(userRow.interests || "[]");
+    const skills = req.body.skills !== undefined ? req.body.skills : JSON.parse(userRow.skills || "[]");
+    const preferredSubjects = req.body.preferredSubjects !== undefined ? req.body.preferredSubjects : JSON.parse(userRow.preferredSubjects || "[]");
+    const careerInterests = req.body.careerInterests !== undefined ? req.body.careerInterests : JSON.parse(userRow.careerInterests || "[]");
+
+    let updatedPasswordHash = userRow.passwordHash;
+    if (req.body.password) {
+      const passCheck = validatePasswordPolicy(req.body.password);
+      if (!passCheck.valid) {
+        return res.status(400).json({ error: passCheck.message });
+      }
+      updatedPasswordHash = await hashPassword(req.body.password);
+    }
 
     await runQuery(
       `UPDATE users 
-       SET fullName = ?, classLevel = ?, interests = ?, skills = ?, preferredSubjects = ?, careerInterests = ? 
+       SET fullName = ?, classLevel = ?, interests = ?, skills = ?, preferredSubjects = ?, careerInterests = ?, passwordHash = ?
        WHERE id = ?`,
       [
-        fullName,
-        classLevel,
+        String(fullName).trim(),
+        String(classLevel),
         JSON.stringify(interests),
         JSON.stringify(skills),
         JSON.stringify(preferredSubjects),
         JSON.stringify(careerInterests),
+        updatedPasswordHash,
         userId
       ]
     );
@@ -262,8 +437,10 @@ app.put("/api/profile/:userId", async (req, res) => {
   }
 });
 
-// Bookmarks / Saved Careers
-app.get("/api/saved-careers/:userId", async (req, res) => {
+// ----------------------------------------------------------------------------
+// Bookmarks / Saved Careers (Protected: Owner or Admin only)
+// ----------------------------------------------------------------------------
+app.get("/api/saved-careers/:userId", requireSelfOrAdmin("userId"), async (req, res) => {
   const { userId } = req.params;
   try {
     const rows = await getAllRows("SELECT careerId FROM saved_careers WHERE userId = ?", [userId]);
@@ -274,7 +451,7 @@ app.get("/api/saved-careers/:userId", async (req, res) => {
   }
 });
 
-app.get("/api/bookmarks/:userId", async (req, res) => {
+app.get("/api/bookmarks/:userId", requireSelfOrAdmin("userId"), async (req, res) => {
   const { userId } = req.params;
   try {
     const rows = await getAllRows("SELECT careerId FROM saved_careers WHERE userId = ?", [userId]);
@@ -285,7 +462,7 @@ app.get("/api/bookmarks/:userId", async (req, res) => {
   }
 });
 
-app.post("/api/bookmarks/toggle", async (req, res) => {
+app.post("/api/bookmarks/toggle", requireSelfOrAdmin("userId"), async (req, res) => {
   const { userId, careerId } = req.body;
   if (!userId || !careerId) {
     return res.status(400).json({ error: "userId and careerId are required" });
@@ -307,7 +484,7 @@ app.post("/api/bookmarks/toggle", async (req, res) => {
   }
 });
 
-app.post("/api/saved-careers/:userId", async (req, res) => {
+app.post("/api/saved-careers/:userId", requireSelfOrAdmin("userId"), async (req, res) => {
   const { userId } = req.params;
   const { careerId } = req.body;
   if (!careerId) {
@@ -324,7 +501,7 @@ app.post("/api/saved-careers/:userId", async (req, res) => {
   }
 });
 
-app.delete("/api/saved-careers/:userId/:careerId", async (req, res) => {
+app.delete("/api/saved-careers/:userId/:careerId", requireSelfOrAdmin("userId"), async (req, res) => {
   const { userId, careerId } = req.params;
   try {
     await runQuery("DELETE FROM saved_careers WHERE userId = ? AND careerId = ?", [userId, careerId]);
@@ -336,8 +513,10 @@ app.delete("/api/saved-careers/:userId/:careerId", async (req, res) => {
   }
 });
 
-// Quiz Attempts
-app.get("/api/quiz/:userId", async (req, res) => {
+// ----------------------------------------------------------------------------
+// Quiz Attempts (Protected: Owner or Admin only)
+// ----------------------------------------------------------------------------
+app.get("/api/quiz/:userId", requireSelfOrAdmin("userId"), async (req, res) => {
   const { userId } = req.params;
   try {
     const rows = await getAllRows("SELECT * FROM quiz_attempts WHERE userId = ? ORDER BY id ASC", [userId]);
@@ -348,7 +527,7 @@ app.get("/api/quiz/:userId", async (req, res) => {
   }
 });
 
-app.post("/api/quiz/:userId", async (req, res) => {
+app.post("/api/quiz/:userId", requireSelfOrAdmin("userId"), async (req, res) => {
   const { userId } = req.params;
   const { answers, vector } = req.body;
 
@@ -359,11 +538,12 @@ app.post("/api/quiz/:userId", async (req, res) => {
       [userId, JSON.stringify(answers || {}), JSON.stringify(vector || {}), timestamp]
     );
 
-    // Insert Notification SQL relational way
+    // Insert Notification with unique ID
+    const notifId = `n-quiz-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`;
     await runQuery(
       "INSERT INTO notifications (id, userId, title, body, timestamp, read) VALUES (?, ?, ?, ?, ?, ?)",
       [
-        "n-quiz-" + Date.now(),
+        notifId,
         userId,
         "AI Career Quiz Completed 🎓",
         "Your interests have been mapped. Check your personalized match scores on the Dashboard!",
@@ -383,8 +563,10 @@ app.post("/api/quiz/:userId", async (req, res) => {
   }
 });
 
-// Notifications
-app.get("/api/notifications/:userId", async (req, res) => {
+// ----------------------------------------------------------------------------
+// Notifications (Protected: Owner or Admin only)
+// ----------------------------------------------------------------------------
+app.get("/api/notifications/:userId", requireSelfOrAdmin("userId"), async (req, res) => {
   const { userId } = req.params;
   try {
     const rows = await getAllRows("SELECT * FROM notifications WHERE userId = ? ORDER BY timestamp DESC", [userId]);
@@ -399,7 +581,7 @@ app.get("/api/notifications/:userId", async (req, res) => {
   }
 });
 
-app.post("/api/notifications/read/:userId", async (req, res) => {
+app.post("/api/notifications/read/:userId", requireSelfOrAdmin("userId"), async (req, res) => {
   const { userId } = req.params;
   try {
     await runQuery("UPDATE notifications SET read = 1 WHERE userId = ?", [userId]);
@@ -415,7 +597,7 @@ app.post("/api/notifications/read/:userId", async (req, res) => {
   }
 });
 
-app.post("/api/notifications/:userId/:notificationId/read", async (req, res) => {
+app.post("/api/notifications/:userId/:notificationId/read", requireSelfOrAdmin("userId"), async (req, res) => {
   const { userId, notificationId } = req.params;
   try {
     await runQuery("UPDATE notifications SET read = 1 WHERE userId = ? AND id = ?", [userId, notificationId]);
@@ -431,7 +613,7 @@ app.post("/api/notifications/:userId/:notificationId/read", async (req, res) => 
   }
 });
 
-app.delete("/api/notifications/:userId/:notificationId", async (req, res) => {
+app.delete("/api/notifications/:userId/:notificationId", requireSelfOrAdmin("userId"), async (req, res) => {
   const { userId, notificationId } = req.params;
   try {
     await runQuery("DELETE FROM notifications WHERE userId = ? AND id = ?", [userId, notificationId]);
@@ -447,12 +629,21 @@ app.delete("/api/notifications/:userId/:notificationId", async (req, res) => {
   }
 });
 
-// AI Career Guide Chatbot
-app.post("/api/ai/chat", async (req, res) => {
-  const { message, history, userId } = req.body;
-  if (!message) {
-    return res.status(400).json({ error: "Message is required" });
+// ----------------------------------------------------------------------------
+// AI Career Guide Chatbot (Protected: authenticated users)
+// ----------------------------------------------------------------------------
+app.post("/api/ai/chat", requireAuth, async (req: AuthenticatedRequest, res) => {
+  const { message, history } = req.body;
+  if (!message || typeof message !== "string" || !message.trim()) {
+    return res.status(400).json({ error: "Valid non-empty message is required" });
   }
+
+  // Prevent unbounded message payloads
+  if (message.length > 4000) {
+    return res.status(400).json({ error: "Message exceeds allowed length (4000 characters)" });
+  }
+
+  const userId = req.user!.id;
 
   try {
     // Get user details for rich context setting
@@ -461,13 +652,19 @@ app.post("/api/ai/chat", async (req, res) => {
       const userRow = await getRow("SELECT * FROM users WHERE id = ?", [userId]);
       if (userRow) {
         const u = parseUser(userRow);
+        // FIX: Skills now correctly uses u.skills (not u.interests), with null/empty safe handling
+        const skillsList = Array.isArray(u.skills) && u.skills.length > 0 ? u.skills.join(", ") : "None listed yet";
+        const interestsList = Array.isArray(u.interests) && u.interests.length > 0 ? u.interests.join(", ") : "None listed yet";
+        const subjectsList = Array.isArray(u.preferredSubjects) && u.preferredSubjects.length > 0 ? u.preferredSubjects.join(", ") : "None listed yet";
+        const careersList = Array.isArray(u.careerInterests) && u.careerInterests.length > 0 ? u.careerInterests.join(", ") : "None listed yet";
+
         userContext = `\n[Student Profile Context]:
 - Student Name: ${u.fullName}
-- Education Level: ${u.classLevel}
-- Interests: ${u.interests.join(", ") || "None listed yet"}
-- Skills: ${u.interests.join(", ") || "None listed yet"}
-- Preferred Subjects: ${u.preferredSubjects.join(", ") || "None listed yet"}
-- Career Interests: ${u.careerInterests.join(", ") || "None listed yet"}`;
+- Education Level: ${u.classLevel || "Class 10"}
+- Interests: ${interestsList}
+- Skills: ${skillsList}
+- Preferred Subjects: ${subjectsList}
+- Career Interests: ${careersList}`;
       }
     }
 
@@ -533,10 +730,11 @@ Based on your question and profile, here is a structured roadmap for your explor
 
     const ai = getGenAI();
 
-    // Map history to Google GenAI structure
-    const formattedHistory = (history || []).map((msg: any) => ({
+    // Limit conversation history to the last 10 messages to avoid excessive token consumption
+    const boundedHistory = Array.isArray(history) ? history.slice(-10) : [];
+    const formattedHistory = boundedHistory.map((msg: any) => ({
       role: msg.role === "user" ? "user" : "model",
-      parts: [{ text: msg.text }]
+      parts: [{ text: String(msg.text || "") }]
     }));
 
     let response;
@@ -550,7 +748,7 @@ Based on your question and profile, here is a structured roadmap for your explor
         }
       });
     } catch (primaryErr: any) {
-      console.warn("Primary model gemini-3.8-flash error/overloaded, falling back to gemini-2.5-flash:", primaryErr?.message || primaryErr);
+      console.warn("Primary model gemini-3.8-flash overloaded/unavailable, falling back to gemini-2.5-flash:", primaryErr?.message || primaryErr);
       response = await ai.models.generateContent({
         model: "gemini-2.5-flash",
         contents: [...formattedHistory, { role: "user", parts: [{ text: message }] }],
@@ -581,7 +779,7 @@ Based on your question and profile, here is a structured roadmap for your explor
   }
 });
 
-app.post("/api/ai/generate-quiz", async (req, res) => {
+app.post("/api/ai/generate-quiz", requireAuth, async (req, res) => {
   const { topic } = req.body;
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) {
@@ -644,7 +842,7 @@ Rules:
   }
 });
 
-app.get("/api/ai/chat/:userId", async (req, res) => {
+app.get("/api/ai/chat/:userId", requireSelfOrAdmin("userId"), async (req, res) => {
   const { userId } = req.params;
   try {
     const rows = await getAllRows("SELECT role, text, timestamp FROM conversations WHERE userId = ? ORDER BY id ASC", [userId]);
@@ -655,8 +853,12 @@ app.get("/api/ai/chat/:userId", async (req, res) => {
   }
 });
 
+// ----------------------------------------------------------------------------
+// Admin Endpoints (Strictly Protected: requireAdmin)
+// ----------------------------------------------------------------------------
+
 // Admin Panel Stats
-app.get("/api/admin/stats", async (req, res) => {
+app.get("/api/admin/stats", requireAdmin, async (req, res) => {
   try {
     const totalUsersRow = await getRow("SELECT COUNT(*) as count FROM users");
     const totalQuizzesRow = await getRow("SELECT COUNT(*) as count FROM quiz_attempts");
@@ -692,7 +894,7 @@ app.get("/api/admin/stats", async (req, res) => {
   }
 });
 
-// GET platform custom data
+// GET platform custom data (Open for public browsing of courses/careers)
 app.get("/api/platform/data", async (req, res) => {
   try {
     const rows = await getAllRows("SELECT key, value FROM system_config");
@@ -720,10 +922,10 @@ app.get("/api/platform/data", async (req, res) => {
   }
 });
 
-// POST to update platform custom data
-app.post("/api/platform/save", async (req, res) => {
+// POST to update platform custom data (Strictly Admin only)
+app.post("/api/platform/save", requireAdmin, async (req, res) => {
   const { type, data } = req.body;
-  if (!type || !data) {
+  if (!type || data === undefined) {
     return res.status(400).json({ error: "Missing type or data" });
   }
 
@@ -753,8 +955,8 @@ app.post("/api/platform/save", async (req, res) => {
   }
 });
 
-// Admin to delete/update any student
-app.post("/api/admin/students/save", async (req, res) => {
+// Admin to delete/update any student (Strictly Admin only)
+app.post("/api/admin/students/save", requireAdmin, async (req, res) => {
   const { studentId, action, data } = req.body;
   if (!studentId) {
     return res.status(400).json({ error: "Missing student ID" });
@@ -767,16 +969,17 @@ app.post("/api/admin/students/save", async (req, res) => {
     }
 
     if (action === "delete") {
-      // Due to FOREIGN KEY ON DELETE CASCADE, deleting user deletes bookmarks, quiz attempts, history and notifications automatically!
+      // Due to FOREIGN KEY ON DELETE CASCADE, deleting user deletes bookmarks, quiz attempts, history and notifications automatically
       await runQuery("DELETE FROM users WHERE id = ?", [studentId]);
     } else if (action === "update") {
+      const updatedRole = data.role === "admin" ? "admin" : "student";
       await runQuery(
         "UPDATE users SET fullName = ?, email = ?, classLevel = ?, role = ? WHERE id = ?",
         [
           data.fullName || userRow.fullName,
           (data.email || userRow.email).toLowerCase(),
           data.classLevel || userRow.classLevel,
-          data.role || userRow.role,
+          updatedRole,
           studentId
         ]
       );
@@ -789,8 +992,8 @@ app.post("/api/admin/students/save", async (req, res) => {
   }
 });
 
-// Admin to create system-wide notifications
-app.post("/api/admin/notifications/push", async (req, res) => {
+// Admin to create system-wide notifications (Strictly Admin only)
+app.post("/api/admin/notifications/push", requireAdmin, async (req, res) => {
   const { title, body } = req.body;
   if (!title || !body) {
     return res.status(400).json({ error: "Missing title or body" });
@@ -801,13 +1004,14 @@ app.post("/api/admin/notifications/push", async (req, res) => {
     const timestamp = new Date().toISOString();
 
     for (const u of users) {
+      const notifId = `n-push-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`;
       await runQuery(
         "INSERT INTO notifications (id, userId, title, body, timestamp, read) VALUES (?, ?, ?, ?, ?, ?)",
         [
-          "n-push-" + Date.now() + "-" + Math.random().toString(36).substring(2, 5),
+          notifId,
           u.id,
-          title,
-          body,
+          String(title).trim(),
+          String(body).trim(),
           timestamp,
           0
         ]
@@ -821,7 +1025,11 @@ app.post("/api/admin/notifications/push", async (req, res) => {
   }
 });
 
-// GET all activities
+// ----------------------------------------------------------------------------
+// Activities Endpoints
+// ----------------------------------------------------------------------------
+
+// GET all activities (Public viewing)
 app.get("/api/activities", async (req, res) => {
   try {
     const rows = await getAllRows("SELECT * FROM custom_activities");
@@ -832,8 +1040,8 @@ app.get("/api/activities", async (req, res) => {
   }
 });
 
-// CREATE or UPDATE activity
-app.post("/api/activities", async (req, res) => {
+// CREATE or UPDATE activity (Admin only)
+app.post("/api/activities", requireAdmin, async (req, res) => {
   const activity = req.body;
   if (!activity.type || !activity.title) {
     return res.status(400).json({ error: "Missing type or title" });
@@ -873,10 +1081,10 @@ app.post("/api/activities", async (req, res) => {
       ]
     );
 
-    // Push notifications if the activity is newly published or update status
+    // Push notifications if the activity is newly published
     const statLower = (savedActivity.status || "").toLowerCase();
     if (statLower === "published" || statLower === "live" || statLower === "active") {
-      const targetClass = savedActivity.targetAudience; // e.g. "Class 11", "Class 12", "All"
+      const targetClass = savedActivity.targetAudience;
       
       const iconMap: Record<string, string> = {
         quiz: "📝",
@@ -890,7 +1098,6 @@ app.post("/api/activities", async (req, res) => {
       };
       const icon = iconMap[savedActivity.type] || "✨";
       const notificationItem = {
-        id: "n-act-" + Date.now(),
         title: `${icon} New ${savedActivity.type.toUpperCase()}: ${savedActivity.title}`,
         body: savedActivity.description || `A new educational activity is available for you!`,
         timestamp: new Date().toISOString(),
@@ -913,14 +1120,14 @@ app.post("/api/activities", async (req, res) => {
         }
 
         if (isTarget) {
-          // Check if notification already exists to avoid duplication
           const hasNotif = await getRow("SELECT 1 FROM notifications WHERE userId = ? AND activityId = ?", [student.id, savedActivity.id]);
           if (!hasNotif) {
+            const actNotifId = `n-act-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`;
             await runQuery(
               `INSERT INTO notifications (id, userId, title, body, timestamp, read, activityId, activityType) 
                VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
               [
-                "n-act-" + Date.now() + "-" + Math.random().toString(36).substring(2, 5),
+                actNotifId,
                 student.id,
                 notificationItem.title,
                 notificationItem.body,
@@ -942,8 +1149,8 @@ app.post("/api/activities", async (req, res) => {
   }
 });
 
-// DELETE activity
-app.post("/api/activities/delete", async (req, res) => {
+// DELETE activity (Admin only)
+app.post("/api/activities/delete", requireAdmin, async (req, res) => {
   const { id } = req.body;
   if (!id) return res.status(400).json({ error: "Missing activity ID" });
 
@@ -956,11 +1163,13 @@ app.post("/api/activities/delete", async (req, res) => {
   }
 });
 
-// INTERACT with activity
-app.post("/api/activities/interact", async (req, res) => {
-  const { id, activityId, userId, action, data } = req.body;
+// INTERACT with activity (Protected: Authenticated user interacts as themselves)
+app.post("/api/activities/interact", requireAuth, async (req: AuthenticatedRequest, res) => {
+  const { id, activityId, action, data } = req.body;
   const targetId = id || activityId;
-  if (!targetId || !userId) return res.status(400).json({ error: "Missing parameters" });
+  const userId = req.user!.id; // Always bind to authenticated user identity
+
+  if (!targetId) return res.status(400).json({ error: "Missing activity ID parameter" });
 
   try {
     const actRow = await getRow("SELECT * FROM custom_activities WHERE id = ?", [targetId]);
@@ -1009,44 +1218,83 @@ app.post("/api/activities/interact", async (req, res) => {
   }
 });
 
-
 // ----------------------------------------------------------------------------
-// Vite and Static File Serving
+// Catch Unhandled API Requests with JSON 404
 // ----------------------------------------------------------------------------
-
-// Catch unhandled API requests with 404 JSON instead of HTML
 app.all("/api/*", (req, res) => {
   res.status(404).json({ error: `API route ${req.method} ${req.originalUrl} not found` });
 });
 
-initDb().then(() => {
-  if (process.env.NODE_ENV !== "production") {
-    createViteServer({
-      server: {
-        middlewareMode: true,
-        hmr: false,
-      },
-      appType: "spa"
-    }).then((vite) => {
-      app.use(vite.middlewares);
+// Global Error Handler Middleware
+app.use((err: any, req: express.Request, res: express.Response, next: express.NextFunction) => {
+  console.error("Unhandled Application Error:", err);
+  if (res.headersSent) {
+    return next(err);
+  }
+  res.status(500).json({ error: "Internal server error occurred. Please try again later." });
+});
+
+// Export app for integration tests
+export { app };
+
+// ----------------------------------------------------------------------------
+// Vite and Static File Serving (Only start listening when run directly)
+// ----------------------------------------------------------------------------
+if (process.env.NODE_ENV !== "test") {
+  initDb().then(() => {
+    if (process.env.NODE_ENV !== "production") {
+      createViteServer({
+        server: {
+          middlewareMode: true,
+          hmr: false,
+        },
+        appType: "spa"
+      }).then((vite) => {
+        app.use(vite.middlewares);
+        
+        app.use("*", (req, res, next) => {
+          if (req.originalUrl.startsWith("/api/")) {
+            return next();
+          }
+          
+          const indexHtmlPath = path.join(process.cwd(), "index.html");
+          fs.readFile(indexHtmlPath, "utf-8", (err, html) => {
+            if (err) return next(err);
+            vite.transformIndexHtml(req.originalUrl, html).then((transformedHtml) => {
+              res.status(200).set({ "Content-Type": "text/html" }).end(transformedHtml);
+            }).catch(next);
+          });
+        });
+        
+        const server = app.listen(PORT, "0.0.0.0", () => {
+          console.log(`Server running in development mode on http://localhost:${PORT}`);
+        });
+
+        server.on("error", (err: any) => {
+          console.error("Server listen error:", err);
+        });
+
+        const handleShutdown = () => {
+          server.close(() => {
+            process.exit(0);
+          });
+        };
+        process.on("SIGTERM", handleShutdown);
+        process.on("SIGINT", handleShutdown);
+      });
+    } else {
+      const distPath = path.join(process.cwd(), "dist");
+      app.use(express.static(distPath));
       
-      app.use("*", (req, res, next) => {
-        // Exclude API routes
+      app.get("*", (req, res, next) => {
         if (req.originalUrl.startsWith("/api/")) {
           return next();
         }
-        
-        const indexHtmlPath = path.join(process.cwd(), "index.html");
-        fs.readFile(indexHtmlPath, "utf-8", (err, html) => {
-          if (err) return next(err);
-          vite.transformIndexHtml(req.originalUrl, html).then((transformedHtml) => {
-            res.status(200).set({ "Content-Type": "text/html" }).end(transformedHtml);
-          }).catch(next);
-        });
+        res.sendFile(path.join(distPath, "index.html"));
       });
       
       const server = app.listen(PORT, "0.0.0.0", () => {
-        console.log(`Server running in development mode on http://localhost:${PORT}`);
+        console.log(`Server running in production mode on port ${PORT}`);
       });
 
       server.on("error", (err: any) => {
@@ -1060,34 +1308,8 @@ initDb().then(() => {
       };
       process.on("SIGTERM", handleShutdown);
       process.on("SIGINT", handleShutdown);
-    });
-  } else {
-    const distPath = path.join(process.cwd(), "dist");
-    app.use(express.static(distPath));
-    
-    app.get("*", (req, res, next) => {
-      if (req.originalUrl.startsWith("/api/")) {
-        return next();
-      }
-      res.sendFile(path.join(distPath, "index.html"));
-    });
-    
-    const server = app.listen(PORT, "0.0.0.0", () => {
-      console.log(`Server running in production mode on port ${PORT}`);
-    });
-
-    server.on("error", (err: any) => {
-      console.error("Server listen error:", err);
-    });
-
-    const handleShutdown = () => {
-      server.close(() => {
-        process.exit(0);
-      });
-    };
-    process.on("SIGTERM", handleShutdown);
-    process.on("SIGINT", handleShutdown);
-  }
-}).catch((err) => {
-  console.error("CRITICAL: Failed to initialize SQLite relational database. Server startup aborted.", err);
-});
+    }
+  }).catch((err) => {
+    console.error("CRITICAL: Failed to initialize SQLite relational database. Server startup aborted.", err);
+  });
+}

@@ -42,6 +42,9 @@ export default function Auth({ initialMode, onClose, onLoginSuccess }: AuthProps
   const [successMsg, setSuccessMsg] = useState("");
   const [loading, setLoading] = useState(false);
 
+  const [resetToken, setResetToken] = useState("");
+  const [resetStep, setResetStep] = useState<1 | 2>(1);
+
   const resetMessages = () => {
     setError("");
     setSuccessMsg("");
@@ -49,6 +52,8 @@ export default function Auth({ initialMode, onClose, onLoginSuccess }: AuthProps
 
   const switchMode = (newMode: "login" | "register" | "admin" | "forgot") => {
     setMode(newMode);
+    setResetStep(1);
+    setResetToken("");
     resetMessages();
   };
 
@@ -58,14 +63,51 @@ export default function Auth({ initialMode, onClose, onLoginSuccess }: AuthProps
     resetMessages();
   };
 
+  const handleRequestResetToken = async () => {
+    if (!email.trim()) {
+      setError("Please enter your registered email address.");
+      return;
+    }
+    setLoading(true);
+    resetMessages();
+    try {
+      const res = await fetch("/api/auth/forgot-password", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: email.trim() })
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setError(data.error || "Failed to process password reset request.");
+      } else {
+        setResetStep(2);
+        if (data.resetToken) {
+          setResetToken(data.resetToken);
+          setSuccessMsg("Reset code generated! Please enter your new password below.");
+        } else {
+          setSuccessMsg("If this email is registered, a password reset token has been sent.");
+        }
+      }
+    } catch (e) {
+      setError("Network connection error. Please try again.");
+    } finally {
+      setLoading(false);
+    }
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     resetMessages();
     setLoading(true);
 
     if (mode === "forgot") {
-      if (!email.trim() || !newPassword || !confirmNewPassword) {
-        setError("Please fill in your registered email and both password fields.");
+      if (resetStep === 1) {
+        await handleRequestResetToken();
+        return;
+      }
+
+      if (!email.trim() || !resetToken.trim() || !newPassword || !confirmNewPassword) {
+        setError("Please provide your email, reset token, and matching new password.");
         setLoading(false);
         return;
       }
@@ -84,16 +126,18 @@ export default function Auth({ initialMode, onClose, onLoginSuccess }: AuthProps
         const res = await fetch("/api/auth/reset-password", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ email: email.trim(), newPassword })
+          body: JSON.stringify({ email: email.trim(), token: resetToken.trim(), newPassword })
         });
         const data = await res.json();
         if (!res.ok) {
-          setError(data.error || "Failed to reset password. Please check your email.");
+          setError(data.error || "Failed to reset password. Please verify your token.");
         } else {
           setSuccessMsg("Password reset successfully! You can now log in with your updated credentials.");
           setPassword(newPassword);
           setNewPassword("");
           setConfirmNewPassword("");
+          setResetToken("");
+          setResetStep(1);
         }
       } catch (err) {
         setError("Connection error. Please try again.");
@@ -130,6 +174,9 @@ export default function Auth({ initialMode, onClose, onLoginSuccess }: AuthProps
         if (!res.ok) {
           setError(data.error || "Registration failed. This email may already be in use.");
         } else {
+          if (data.token) {
+            localStorage.setItem("newedu_token", data.token);
+          }
           onLoginSuccess(data.user);
           onClose();
         }
@@ -156,10 +203,13 @@ export default function Auth({ initialMode, onClose, onLoginSuccess }: AuthProps
         if (!res.ok) {
           setError(data.error || "Invalid email or password.");
         } else {
-          if (mode === "admin" && data.user.role !== "admin" && data.user.email !== "admin@educarrier.com" && data.user.email !== "admin@example.com") {
-            setError("Access Restricted: This account does not possess administrative counselor privileges.");
+          if (mode === "admin" && data.user.role !== "admin") {
+            setError("Access Restricted: This account does not possess administrative privileges.");
             setLoading(false);
             return;
+          }
+          if (data.token) {
+            localStorage.setItem("newedu_token", data.token);
           }
           onLoginSuccess(data.user);
           onClose();
@@ -387,60 +437,85 @@ export default function Auth({ initialMode, onClose, onLoginSuccess }: AuthProps
               </div>
             </div>
 
-            {/* In Forgot Password Mode: New Password + Confirmation */}
+            {/* In Forgot Password Mode: Step 1 = Request code, Step 2 = Enter token + New Password */}
             {mode === "forgot" ? (
               <>
-                <div className="space-y-1.5">
-                  <label className="text-[11px] font-bold text-slate-500 uppercase tracking-wider block">
-                    New Password
-                  </label>
-                  <div className="relative flex items-center">
-                    <div className="absolute left-3.5 text-slate-400 pointer-events-none">
-                      <Lock className="w-4 h-4" />
+                {resetStep === 2 && (
+                  <div className="space-y-1.5 animate-in fade-in duration-200">
+                    <label className="text-[11px] font-bold text-amber-600 uppercase tracking-wider block">
+                      Verification Reset Token
+                    </label>
+                    <div className="relative flex items-center">
+                      <div className="absolute left-3.5 text-slate-400 pointer-events-none">
+                        <KeyRound className="w-4 h-4" />
+                      </div>
+                      <input
+                        type="text"
+                        required
+                        value={resetToken}
+                        onChange={(e) => setResetToken(e.target.value)}
+                        placeholder="Paste verification reset token"
+                        className="w-full pl-10 pr-4 py-2.5 text-xs font-mono bg-amber-50/50 hover:bg-white focus:bg-white border border-amber-200 rounded-2xl focus:outline-none focus:ring-2 focus:ring-amber-500/20 focus:border-amber-600 transition-all text-slate-900 placeholder:text-slate-400"
+                      />
                     </div>
-                    <input
-                      type={showNewPassword ? "text" : "password"}
-                      required
-                      value={newPassword}
-                      onChange={(e) => setNewPassword(e.target.value)}
-                      placeholder="Minimum 6 characters"
-                      className="w-full pl-10 pr-10 py-2.5 text-sm bg-slate-50/70 hover:bg-slate-50 focus:bg-white border border-slate-200 rounded-2xl focus:outline-none focus:ring-2 focus:ring-amber-500/20 focus:border-amber-600 transition-all font-medium text-slate-900 placeholder:text-slate-400"
-                    />
-                    <button
-                      type="button"
-                      onClick={() => setShowNewPassword(!showNewPassword)}
-                      className="absolute right-3.5 text-slate-400 hover:text-slate-600 focus:outline-none"
-                    >
-                      {showNewPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-                    </button>
                   </div>
-                </div>
+                )}
 
-                <div className="space-y-1.5">
-                  <label className="text-[11px] font-bold text-slate-500 uppercase tracking-wider block">
-                    Confirm New Password
-                  </label>
-                  <div className="relative flex items-center">
-                    <div className="absolute left-3.5 text-slate-400 pointer-events-none">
-                      <Lock className="w-4 h-4" />
+                {resetStep === 2 && (
+                  <>
+                    <div className="space-y-1.5">
+                      <label className="text-[11px] font-bold text-slate-500 uppercase tracking-wider block">
+                        New Password
+                      </label>
+                      <div className="relative flex items-center">
+                        <div className="absolute left-3.5 text-slate-400 pointer-events-none">
+                          <Lock className="w-4 h-4" />
+                        </div>
+                        <input
+                          type={showNewPassword ? "text" : "password"}
+                          required
+                          value={newPassword}
+                          onChange={(e) => setNewPassword(e.target.value)}
+                          placeholder="Minimum 6 characters"
+                          className="w-full pl-10 pr-10 py-2.5 text-sm bg-slate-50/70 hover:bg-slate-50 focus:bg-white border border-slate-200 rounded-2xl focus:outline-none focus:ring-2 focus:ring-amber-500/20 focus:border-amber-600 transition-all font-medium text-slate-900 placeholder:text-slate-400"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => setShowNewPassword(!showNewPassword)}
+                          className="absolute right-3.5 text-slate-400 hover:text-slate-600 focus:outline-none"
+                        >
+                          {showNewPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                        </button>
+                      </div>
                     </div>
-                    <input
-                      type={showConfirmPassword ? "text" : "password"}
-                      required
-                      value={confirmNewPassword}
-                      onChange={(e) => setConfirmNewPassword(e.target.value)}
-                      placeholder="Re-enter new password"
-                      className="w-full pl-10 pr-10 py-2.5 text-sm bg-slate-50/70 hover:bg-slate-50 focus:bg-white border border-slate-200 rounded-2xl focus:outline-none focus:ring-2 focus:ring-amber-500/20 focus:border-amber-600 transition-all font-medium text-slate-900 placeholder:text-slate-400"
-                    />
-                    <button
-                      type="button"
-                      onClick={() => setShowConfirmPassword(!showConfirmPassword)}
-                      className="absolute right-3.5 text-slate-400 hover:text-slate-600 focus:outline-none"
-                    >
-                      {showConfirmPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-                    </button>
-                  </div>
-                </div>
+
+                    <div className="space-y-1.5">
+                      <label className="text-[11px] font-bold text-slate-500 uppercase tracking-wider block">
+                        Confirm New Password
+                      </label>
+                      <div className="relative flex items-center">
+                        <div className="absolute left-3.5 text-slate-400 pointer-events-none">
+                          <Lock className="w-4 h-4" />
+                        </div>
+                        <input
+                          type={showConfirmPassword ? "text" : "password"}
+                          required
+                          value={confirmNewPassword}
+                          onChange={(e) => setConfirmNewPassword(e.target.value)}
+                          placeholder="Re-enter new password"
+                          className="w-full pl-10 pr-10 py-2.5 text-sm bg-slate-50/70 hover:bg-slate-50 focus:bg-white border border-slate-200 rounded-2xl focus:outline-none focus:ring-2 focus:ring-amber-500/20 focus:border-amber-600 transition-all font-medium text-slate-900 placeholder:text-slate-400"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => setShowConfirmPassword(!showConfirmPassword)}
+                          className="absolute right-3.5 text-slate-400 hover:text-slate-600 focus:outline-none"
+                        >
+                          {showConfirmPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                        </button>
+                      </div>
+                    </div>
+                  </>
+                )}
               </>
             ) : (
               /* Regular Password Field (Login, Register, Admin) */
@@ -566,7 +641,7 @@ export default function Auth({ initialMode, onClose, onLoginSuccess }: AuthProps
               ) : mode === "forgot" ? (
                 <>
                   <KeyRound className="w-4.5 h-4.5" />
-                  <span>Update & Reset Password</span>
+                  <span>{resetStep === 1 ? "Request Reset Token" : "Verify Token & Update Password"}</span>
                 </>
               ) : (
                 <>

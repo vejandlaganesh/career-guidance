@@ -2,6 +2,7 @@ import React, { useState, useEffect } from "react";
 import { allCareers, CATEGORY_LABELS } from "../data";
 import { User, QuizAttempt } from "../types";
 import { BrainCircuit, Check, ArrowRight, ArrowLeft, RefreshCw, Sparkles, Award, Bookmark, ChevronDown, ChevronUp, BookOpen, Sliders } from "lucide-react";
+import { authFetch } from "../utils/api";
 
 interface CareerQuizProps {
   user: User | null;
@@ -105,7 +106,7 @@ export default function CareerQuiz({ user, onQuizCompleted, onOpenCareer }: Care
 
   useEffect(() => {
     if (user) {
-      fetch(`/api/bookmarks/${user.id}`)
+      authFetch(`/api/bookmarks/${user.id}`)
         .then((res) => {
           if (res.ok && res.headers.get("content-type")?.includes("application/json")) {
             return res.json();
@@ -127,7 +128,7 @@ export default function CareerQuiz({ user, onQuizCompleted, onOpenCareer }: Care
       return;
     }
     try {
-      const res = await fetch("/api/bookmarks/toggle", {
+      const res = await authFetch("/api/bookmarks/toggle", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ userId: user.id, careerId })
@@ -227,7 +228,7 @@ export default function CareerQuiz({ user, onQuizCompleted, onOpenCareer }: Care
     // Save Attempt to fullstack backend if user is authenticated
     if (user) {
       try {
-        await fetch(`/api/quiz/${user.id}`, {
+        await authFetch(`/api/quiz/${user.id}`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ answers, vector })
