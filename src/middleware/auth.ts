@@ -1,4 +1,4 @@
-import { Request, Response, NextFunction } from "express";
+import type { Request, Response, NextFunction } from "express";
 import { verifyAuthToken } from "../utils/auth.ts";
 
 export interface AuthenticatedRequest extends Request {
